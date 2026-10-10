@@ -1,0 +1,25 @@
+﻿# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node.js y React
+node_modules/
+dist/
+.vite/
+
+# Editores
+.vscode/
+.idea/
+
+# Logs y archivos temporales
+*.log
+.DS_Store
+Thumbs.db
