@@ -1,6 +1,7 @@
 import { Routes, Route, Link } from 'react-router-dom';
 import "./App.css";
 import LoginAdmin from './ModuloAdministracion/LoginAdmin';
+import Inscripcion from './ModuloIncripcion/components/Inscripcion';
 
 export default function App() {
   return (
@@ -22,6 +23,8 @@ export default function App() {
 
       {/* LA RUTA QUE CONECTA EL BOTÓN CON TU LOGIN */}
       <Routes>
+        <Route path="/" element={<Inscripcion />} />
+        <Route path="/inscripcion" element={<Inscripcion />} />
         <Route path="/admin" element={<LoginAdmin />} />
       </Routes>
     </>

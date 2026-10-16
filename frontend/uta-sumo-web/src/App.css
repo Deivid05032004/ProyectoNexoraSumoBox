@@ -137,3 +137,459 @@ body {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+
+
+
+/* AQUI ESTA EL ESTILO PARA EL FRONEND*/
+
+.registration-section {
+  padding: 0 10% 82px;
+}
+
+.section-heading {
+  max-width: 900px;
+  margin: 52px auto 20px;
+  text-align: left;
+}
+
+.section-heading h1 {
+  margin: 8px 0;
+  color: #fff;
+  font-size: clamp(28px, 4vw, 42px);
+}
+
+.section-heading p {
+  color: #a9b4c4;
+  font-size: 14px;
+}
+
+.eyebrow {
+  color: #ff9d96;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.registration-card {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px;
+  border: 1px solid #ffffff14;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #151e2c, #101722);
+}
+
+.registration-summary,
+.form-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.registration-summary {
+  grid-template-columns: repeat(2, 1fr);
+  margin-bottom: 30px;
+  padding: 18px;
+  border-radius: 8px;
+  background: #f0443814;
+}
+
+.registration-summary span,
+.registration-card label,
+.members-heading p,
+.payment-box p {
+  color: #a9b4c4;
+  font-size: 12px;
+}
+
+.registration-summary strong {
+  display: block;
+  margin-top: 7px;
+  color: #fff;
+}
+
+.registration-summary small {
+  display: block;
+  margin-top: 5px;
+  color: #a9b4c4;
+  font-size: 11px;
+}
+
+.form-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.form-grid-three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.form-grid-four {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.registration-card label {
+  display: grid;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.registration-card input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ffffff1d;
+  border-radius: 7px;
+  background: #0b1019;
+  color: #fff;
+  font: inherit;
+}
+
+.registration-card input[aria-invalid='true'] {
+  border-color: #ff6558;
+}
+
+.field-error {
+  color: #ffb4ae;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.member-fields {
+  margin: 24px 0;
+  padding: 20px;
+  border: 1px solid #ffffff14;
+  border-radius: 8px;
+}
+
+.member-fields legend,
+.members-heading h3,
+.payment-box h3 {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.payment-box {
+  margin: 25px 0;
+  padding: 20px;
+  border-radius: 8px;
+  background: #ffffff08;
+}
+
+.file-input {
+  cursor: pointer;
+}
+
+.file-input input {
+  display: none;
+}
+
+.file-input span {
+  display: block;
+  padding: 12px;
+  border: 1px dashed #ff6558;
+  border-radius: 7px;
+  color: #ff9d96;
+}
+
+.primary-button {
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  padding: 13px 16px;
+  background: #ff6558;
+  color: #160a09;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #ff8378;
+}
+
+.primary-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.form-error {
+  margin-bottom: 16px;
+  color: #ffc1bb;
+  font-size: 13px;
+}
+
+.confirmation-card {
+  margin-top: 60px;
+  text-align: center;
+}
+
+.success-icon {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: #4cce9130;
+  color: #4cce91;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.registration-code {
+  margin: 20px 0;
+  color: #a9b4c4;
+}
+
+@media (max-width: 720px) {
+  .registration-section {
+    padding: 0 7% 60px;
+  }
+
+  .registration-card {
+    padding: 20px;
+  }
+
+  .registration-summary,
+  .form-grid,
+  .form-grid-three,
+  .form-grid-four {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Módulo público de inscripciones: estética basada en el prototipo de Eventix. */
+.registration-section {
+  --registration-bg: #eef1f3;
+  --registration-surface: #fff;
+  --registration-ink: #12161b;
+  --registration-muted: #556170;
+  --registration-line: #d3dae0;
+  --registration-accent: #1f4fd8;
+  --registration-warn: #8a4b00;
+  --registration-warn-bg: #fff1cf;
+  --registration-error: #a4262c;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 28px 20px 60px;
+  background: var(--registration-bg);
+  color: var(--registration-ink);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  text-align: left;
+}
+
+.section-heading {
+  max-width: none;
+  margin: 0 0 24px;
+  padding: 0;
+}
+
+.section-heading .eyebrow {
+  display: inline-block;
+  margin-bottom: 14px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: var(--registration-ink);
+  color: var(--registration-bg);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.section-heading h1 {
+  max-width: 680px;
+  margin: 0;
+  color: var(--registration-ink);
+  font-family: Archivo, "Arial Black", "Segoe UI", sans-serif;
+  font-size: clamp(34px, 6vw, 60px);
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  line-height: 1.02;
+}
+
+.section-heading p {
+  max-width: 58ch;
+  margin-top: 14px;
+  color: var(--registration-muted);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.registration-card {
+  max-width: none;
+  margin: 0;
+  padding: 22px;
+  border: 1px solid var(--registration-line);
+  border-radius: 14px;
+  background: var(--registration-surface);
+  box-shadow: none;
+}
+
+.registration-summary {
+  grid-template-columns: 1.3fr 0.7fr;
+  gap: 14px;
+  margin: 0 0 24px;
+  padding: 0 0 16px;
+  border-radius: 0;
+  border-bottom: 1px solid var(--registration-line);
+  background: transparent;
+}
+
+.registration-summary > div:last-child {
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--registration-warn-bg);
+  color: var(--registration-warn);
+}
+
+.registration-summary span,
+.registration-card label,
+.members-heading p,
+.payment-box p {
+  color: var(--registration-muted);
+  font-size: 14px;
+}
+
+.registration-summary strong {
+  margin-top: 5px;
+  color: var(--registration-ink);
+  font-family: Archivo, "Arial Black", "Segoe UI", sans-serif;
+  font-size: 18px;
+}
+
+.registration-summary > div:last-child strong,
+.registration-summary > div:last-child small {
+  color: var(--registration-warn);
+}
+
+.registration-summary small {
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+.form-grid,
+.form-grid-three,
+.form-grid-four {
+  gap: 14px;
+}
+
+.registration-card label {
+  gap: 5px;
+  color: var(--registration-ink);
+  font-weight: 600;
+}
+
+.registration-card input {
+  padding: 10px 12px;
+  border: 1px solid var(--registration-line);
+  border-radius: 8px;
+  background: var(--registration-bg);
+  color: var(--registration-ink);
+}
+
+.registration-card input:focus {
+  outline: 3px solid color-mix(in srgb, var(--registration-accent) 35%, transparent);
+  outline-offset: 1px;
+  border-color: var(--registration-accent);
+}
+
+.registration-card input[aria-invalid='true'] {
+  border-color: var(--registration-error);
+}
+
+.members-heading {
+  margin-top: 24px;
+}
+
+.members-heading h2,
+.payment-box h2 {
+  margin: 0 0 5px;
+  color: var(--registration-ink);
+  font-family: Archivo, "Arial Black", "Segoe UI", sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.member-fields {
+  margin: 14px 0;
+  padding: 16px 0 2px;
+  border: 0;
+  border-top: 1px solid var(--registration-line);
+  border-radius: 0;
+}
+
+.member-fields legend {
+  padding-right: 10px;
+  color: var(--registration-ink);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.payment-box {
+  margin: 24px 0;
+  padding: 16px 0;
+  border-top: 1px solid var(--registration-line);
+  border-bottom: 1px solid var(--registration-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.payment-box p {
+  margin-bottom: 14px;
+}
+
+.file-input span {
+  padding: 11px 12px;
+  border-color: var(--registration-accent);
+  color: var(--registration-accent);
+  background: #f5f7ff;
+}
+
+.field-error,
+.form-error {
+  color: var(--registration-error);
+}
+
+.primary-button {
+  width: auto;
+  padding: 12px 20px;
+  border-radius: 10px;
+  background: var(--registration-accent);
+  color: #fff;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #173fae;
+}
+
+.confirmation-card {
+  margin-top: 20px;
+  text-align: left;
+}
+
+.confirmation-card .eyebrow {
+  color: var(--registration-muted);
+}
+
+.confirmation-card h2,
+.confirmation-card p {
+  color: var(--registration-ink);
+}
+
+@media (max-width: 720px) {
+  .registration-section {
+    padding: 24px 16px 48px;
+  }
+
+  .registration-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid-four {
+    grid-template-columns: 1fr;
+  }
+
+  .primary-button {
+    width: 100%;
+  }
+}
