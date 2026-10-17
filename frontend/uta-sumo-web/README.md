@@ -1,16 +1,41 @@
-# React + Vite
+# UTA SUMO frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Interfaz React/Vite de acceso para participantes y personal autorizado.
 
-Currently, two official plugins are available:
+## Configuración local
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Desde esta carpeta:
 
-## React Compiler
+```powershell
+Copy-Item .env.example .env
+npm install
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Configura `.env`:
 
-## Expanding the Oxlint configuration
+```env
+VITE_API_BASE_URL=http://127.0.0.1:8000
+VITE_GOOGLE_CLIENT_ID=
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+El Client ID debe coincidir con `GOOGLE_CLIENT_ID` en
+`backend/uta_sumo_api/.env`. Autoriza `http://localhost:5173` como JavaScript
+origin en Google Cloud Console. Reinicia Vite tras cambiar `.env`.
+
+## Rutas y roles
+
+- `/` y `/inscripcion`: registro de participante con email/contraseña o Google.
+- `/participante`: login de participante con email/contraseña o Google.
+- `/admin`: ingreso manual de `ADMIN`, `REVIEWER` y `TREASURY`; no incluye
+  botón Google ni crea cuentas privilegiadas.
+
+El alta de roles privilegiados se realiza manualmente desde el backend con
+`scripts/provision_operator_user.py`. El frontend no permite asignar roles.
+Google Identity Services autentica y entrega un ID token al endpoint backend;
+la contraseña de Google nunca llega a esta aplicación. Los JWT de API se
+mantienen en `sessionStorage` durante la sesión de pestaña.
+
+El funcionamiento real de Google requiere configurar un Client ID de Google
+Cloud en ambos proyectos. Sin este valor, la interfaz muestra que la función
+está pendiente de configuración y los endpoints backend responden `503`.

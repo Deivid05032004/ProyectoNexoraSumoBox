@@ -24,7 +24,7 @@ export default function Bienvenida() {
 
           <p className="hero-description">
             Bienvenido al portal oficial de registro y gestión de competencia para la categoría{' '}
-            <strong>Mini Sumo RC Amateur</strong> de la Facultad de Ingeniería en Sistemas, 
+            <strong>Mini Sumo RC Amateur</strong> de la Facultad de Ingeniería en Sistemas,
             Electrónica e Industrial de la Universidad Técnica de Ambato.
           </p>
 

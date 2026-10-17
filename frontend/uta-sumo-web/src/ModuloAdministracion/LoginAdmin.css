@@ -1,6 +1,6 @@
 /* Contenedor principal: flexbox centrado vertical y horizontalmente */
 .login-admin-container {
-  min-height: 100vh;
+  min-height: calc(100vh - 4.5rem);
   width: 100%;
   display: flex;
   align-items: center;
@@ -105,5 +105,42 @@
   font-size: 0.85rem;
   color: #8b949e;
   line-height: 1.4;
+}
+
+.admin-eyebrow {
+  margin: 0 0 0.6rem;
+  color: #9aafff;
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+  text-align: center;
+}
+
+.admin-login-description {
+  margin: -0.8rem 0 1.5rem;
+  color: #aeb8c7;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.admin-login-message {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 8px;
+  color: #ffd6d6;
+  background: #4b2429;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.admin-login-success {
+  color: #d5f6df;
+  background: #1d3d2b;
+}
+
+.login-admin-submit-btn:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 

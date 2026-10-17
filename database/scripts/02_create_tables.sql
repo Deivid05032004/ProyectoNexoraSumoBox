@@ -37,35 +37,32 @@ GO
 -- 4. Equipos
 CREATE TABLE dbo.Teams (
     TeamId INT IDENTITY(1,1) PRIMARY KEY,
-    Name NVARCHAR(120) NOT NULL,
+    Name NVARCHAR(512) NOT NULL,
     InstitutionId INT NOT NULL,
-    ContactPhone NVARCHAR(25) NULL,
-    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-    CONSTRAINT FK_Teams_Institutions
-        FOREIGN KEY (InstitutionId)
-        REFERENCES dbo.Institutions(InstitutionId)
+    ContactPhone NVARCHAR(128) NULL,
+    OwnerUserId INT NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
 );
 GO
 
 -- 5. Personas participantes y entrenadores
 CREATE TABLE dbo.Participants (
     ParticipantId INT IDENTITY(1,1) PRIMARY KEY,
-    FirstName NVARCHAR(100) NOT NULL,
-    LastName NVARCHAR(100) NOT NULL,
-    MobilePhone NVARCHAR(25) NULL,
+    FirstName NVARCHAR(512) NOT NULL,
+    LastName NVARCHAR(512) NOT NULL,
+    MobilePhone NVARCHAR(128) NULL,
     InstitutionId INT NOT NULL,
-    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-    CONSTRAINT FK_Participants_Institutions
-        FOREIGN KEY (InstitutionId)
-        REFERENCES dbo.Institutions(InstitutionId)
+    UserId INT NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
 );
 GO
 
 -- 6. Robots registrados
 CREATE TABLE dbo.Robots (
     RobotId INT IDENTITY(1,1) PRIMARY KEY,
-    Name NVARCHAR(120) NOT NULL,
-    RobotDescription NVARCHAR(500) NULL,
+    Name NVARCHAR(512) NOT NULL,
+    RobotDescription NVARCHAR(1024) NULL,
+    OwnerUserId INT NULL,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
 );
 GO
@@ -89,24 +86,8 @@ CREATE TABLE dbo.Registrations (
     RegistrationCode UNIQUEIDENTIFIER NOT NULL
         DEFAULT NEWID(),
     RegisteredAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-    Notes NVARCHAR(1000) NULL,
-
-    CONSTRAINT FK_Registrations_Events
-        FOREIGN KEY (EventId) REFERENCES dbo.Events(EventId),
-
-    CONSTRAINT FK_Registrations_Categories
-        FOREIGN KEY (CategoryId) REFERENCES dbo.Categories(CategoryId),
-
-    CONSTRAINT FK_Registrations_Teams
-        FOREIGN KEY (TeamId) REFERENCES dbo.Teams(TeamId),
-
-    CONSTRAINT FK_Registrations_Robots
-        FOREIGN KEY (RobotId) REFERENCES dbo.Robots(RobotId),
-
-    CONSTRAINT FK_Registrations_Statuses
-        FOREIGN KEY (StatusId)
-        REFERENCES dbo.RegistrationStatuses(StatusId),
-
+    Notes NVARCHAR(2048) NULL,
+    CreatedByUserId INT NULL,
     CONSTRAINT UQ_Registrations_Code UNIQUE (RegistrationCode)
 );
 GO
@@ -119,14 +100,6 @@ CREATE TABLE dbo.RegistrationParticipants (
 
     CONSTRAINT PK_RegistrationParticipants
         PRIMARY KEY (RegistrationId, ParticipantId),
-
-    CONSTRAINT FK_RegParticipants_Registrations
-        FOREIGN KEY (RegistrationId)
-        REFERENCES dbo.Registrations(RegistrationId),
-
-    CONSTRAINT FK_RegParticipants_Participants
-        FOREIGN KEY (ParticipantId)
-        REFERENCES dbo.Participants(ParticipantId),
 
     CONSTRAINT CK_RegParticipants_Role
         CHECK (Role IN ('PARTICIPANT', 'COACH'))
@@ -143,12 +116,6 @@ CREATE TABLE dbo.Tariffs (
     ValidUntil DATE NULL,
     IsActive BIT NOT NULL DEFAULT 1,
 
-    CONSTRAINT FK_Tariffs_Events
-        FOREIGN KEY (EventId) REFERENCES dbo.Events(EventId),
-
-    CONSTRAINT FK_Tariffs_Categories
-        FOREIGN KEY (CategoryId) REFERENCES dbo.Categories(CategoryId),
-
     CONSTRAINT CK_Tariffs_Amount CHECK (Amount >= 0),
     CONSTRAINT CK_Tariffs_Dates
         CHECK (ValidUntil IS NULL OR ValidUntil >= ValidFrom)
@@ -162,17 +129,10 @@ CREATE TABLE dbo.Payments (
     TariffId INT NOT NULL,
     Amount DECIMAL(10,2) NOT NULL,
     PaymentStatus VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-    PaymentReference NVARCHAR(150) NULL,
+    PaymentReference NVARCHAR(512) NULL,
     VerifiedByUserId INT NULL,
     VerifiedAt DATETIME2 NULL,
     CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-
-    CONSTRAINT FK_Payments_Registrations
-        FOREIGN KEY (RegistrationId)
-        REFERENCES dbo.Registrations(RegistrationId),
-
-    CONSTRAINT FK_Payments_Tariffs
-        FOREIGN KEY (TariffId) REFERENCES dbo.Tariffs(TariffId),
 
     CONSTRAINT CK_Payments_Amount CHECK (Amount >= 0),
 
@@ -193,16 +153,42 @@ GO
 -- 13. Usuarios administrativos y revisores
 CREATE TABLE dbo.Users (
     UserId INT IDENTITY(1,1) PRIMARY KEY,
-    Username NVARCHAR(80) NOT NULL UNIQUE,
+    EmailCiphertext NVARCHAR(512) NOT NULL,
+    EmailLookupHash CHAR(64) NOT NULL,
     PasswordHash NVARCHAR(255) NOT NULL,
-    FirstName NVARCHAR(100) NOT NULL,
-    LastName NVARCHAR(100) NOT NULL,
+    FirstName NVARCHAR(512) NOT NULL,
+    LastName NVARCHAR(512) NOT NULL,
     RoleId INT NOT NULL,
     IsActive BIT NOT NULL DEFAULT 1,
-    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    TokenVersion INT NOT NULL DEFAULT 0,
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+);
+GO
 
-    CONSTRAINT FK_Users_Roles
-        FOREIGN KEY (RoleId) REFERENCES dbo.Roles(RoleId)
+-- Evidencias: el binario vive en almacenamiento privado externo a SQL.
+CREATE TABLE dbo.PaymentReceipts (
+    ReceiptId INT IDENTITY(1,1) PRIMARY KEY,
+    PaymentId INT NOT NULL,
+    StorageKey NVARCHAR(100) NOT NULL UNIQUE,
+    MediaType VARCHAR(100) NOT NULL,
+    UploadedByUserId INT NOT NULL,
+    UploadedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+    IsCurrent BIT NOT NULL DEFAULT 1,
+    EncryptionVersion TINYINT NOT NULL DEFAULT 1
+);
+GO
+
+-- Auditoría sin contraseñas, tokens ni otros secretos.
+CREATE TABLE dbo.UserSecurityAudit (
+    AuditId BIGINT IDENTITY(1,1) PRIMARY KEY,
+    TargetUserId INT NOT NULL,
+    ActorUserId INT NULL,
+    ActionCode VARCHAR(30) NOT NULL,
+    PreviousRoleId INT NULL,
+    NewRoleId INT NULL,
+    PreviousIsActive BIT NULL,
+    NewIsActive BIT NULL,
+    CreatedAt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
 GO
 
@@ -213,23 +199,7 @@ CREATE TABLE dbo.StatusHistory (
     PreviousStatusId INT NULL,
     NewStatusId INT NOT NULL,
     ChangedByUserId INT NULL,
-    Comments NVARCHAR(1000) NULL,
-    ChangedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
-
-    CONSTRAINT FK_StatusHistory_Registrations
-        FOREIGN KEY (RegistrationId)
-        REFERENCES dbo.Registrations(RegistrationId),
-
-    CONSTRAINT FK_StatusHistory_PreviousStatus
-        FOREIGN KEY (PreviousStatusId)
-        REFERENCES dbo.RegistrationStatuses(StatusId),
-
-    CONSTRAINT FK_StatusHistory_NewStatus
-        FOREIGN KEY (NewStatusId)
-        REFERENCES dbo.RegistrationStatuses(StatusId),
-
-    CONSTRAINT FK_StatusHistory_Users
-        FOREIGN KEY (ChangedByUserId)
-        REFERENCES dbo.Users(UserId)
+    Comments NVARCHAR(2048) NULL,
+    ChangedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME()
 );
 GO
