@@ -238,7 +238,7 @@ El botón Google y el registro local aparecen en las rutas React `/`,
 `/inscripcion` y `/participante`, destinadas exclusivamente a `PARTICIPANT`.
 La ruta `/admin` solo ofrece email y contraseña. La API también restringe
 `/auth/google` y `/auth/google/link` a participantes; una identidad Google no
-puede crear, autenticar ni vincular cuentas `ADMIN`, `REVIEWER` o `TREASURY`.
+puede crear, autenticar ni vincular cuentas `ADMIN`, `EVENT_MANAGER` o `PARTICIPANT`.
 
 El personal privilegiado se crea manualmente mediante
 `backend/uta_sumo_api/scripts/provision_operator_user.py`. Este aprovisionador
@@ -265,15 +265,15 @@ invalida tokens anteriores. La propiedad se verifica además del rol.
 
 | Rol | Capacidades principales |
 | --- | --- |
-| `PARTICIPANT` | Perfil y recursos propios; equipo/robot; inscripciones propias; comprobante y consulta propia. No accede a finanzas globales. |
-| `REVIEWER` | Cola e historial de inscripciones; aprobar, observar o rechazar cuando la transición sea válida; reportes de inscripción. |
-| `TREASURY` | Pagos/comprobantes y revisión financiera; reportes agregados/detallados de pagos. |
-| `ADMIN` | Catálogos, cuentas, roles, auditoría, dashboard; revisión de inscripción y pagos; todos los reportes. |
+| `PARTICIPANT` | Perfil y recursos propios; inscripciones y pagos propios. Puede consultar resultados públicos, clasificación e historial de puntos. |
+| `EVENT_MANAGER` | Operación de competencia, estados, rondas, enfrentamientos, puntuaciones y reportes operativos. No puede consultar pagos ni comprobantes. |
+| `ADMIN` | Catálogos, cuentas y roles, auditoría, inscripción y pagos; comprobantes y reportes operativos/financieros. |
 
-Los revisores actualmente comparten la cola; no existe asignación de
-inscripciones a un revisor individual. Los endpoints administrativos permiten
-cambiar roles/estado, pero protegen contra desactivar al último administrador
-activo.
+La migración 10 mapea las cuentas heredadas `REVIEWER` a `EVENT_MANAGER` y
+`TREASURY` a `ADMIN`, conservando usuarios; esto debe revisarse antes de
+desplegar porque `ADMIN` recibe acceso financiero. Los endpoints administrativos
+permiten cambiar roles/estado, pero protegen contra desactivar al último
+administrador activo.
 
 ## 7. Inventario de endpoints
 
@@ -318,7 +318,7 @@ Swagger para ver campos y ejemplos exactos de la versión ejecutándose.
 | Método | Ruta | Acceso |
 | --- | --- | --- |
 | `GET`, `PUT` | `/api/v1/participants/me` | Perfil propio |
-| `GET` | `/api/v1/participants` | ADMIN/REVIEWER; lista autorizada |
+| `GET` | `/api/v1/participants` | ADMIN/EVENT_MANAGER; lista autorizada |
 | `GET`, `POST` | `/api/v1/teams`, `/api/v1/teams/{id}` | Listado acotado por dueño; creación participante |
 | `PUT` | `/api/v1/teams/{id}` | Propietario o permiso administrativo definido por router |
 | `GET`, `POST` | `/api/v1/robots`, `/api/v1/robots/{id}` | Listado acotado por dueño; creación participante |
@@ -335,18 +335,19 @@ Swagger para ver campos y ejemplos exactos de la versión ejecutándose.
 | `GET` | `/api/v1/registrations/{id}`, `/code/{uuid}` | Propietario o rol operativo autorizado |
 | `PATCH`, `POST` | `/api/v1/registrations/{id}`, `/{id}/cancel` | Participante propietario, sujeto al estado |
 | `GET` | `/api/v1/registrations/{id}/history` | Propietario o rol operativo autorizado |
-| `POST` | `/api/v1/registrations/{id}/review` | ADMIN/REVIEWER; `APPROVED`, `OBSERVED`, `REJECTED` según estado |
+| `POST` | `/api/v1/registrations/{id}/review` | ADMIN; `APPROVED`, `OBSERVED`, `REJECTED` según estado |
 | `GET` | `/api/v1/payments`, `/api/v1/payments/{id}` | Según rol y relación con inscripción |
 | `POST` | `/api/v1/payments/{id}/receipt` | Propietario; `multipart/form-data`, campo `file`, referencia opcional |
 | `GET` | `/api/v1/payments/{id}/receipt` | Propietario o finanzas autorizadas |
-| `POST` | `/api/v1/payments/{id}/review` | TREASURY/ADMIN; marca `PAID` o `REJECTED` |
+| `POST` | `/api/v1/payments/{id}/review` | ADMIN; marca `PAID` o `REJECTED` |
 
 Flujo válido: crear inscripción y pago `PENDING`; cargar comprobante pasa el pago
-a `IN_REVIEW` y la inscripción a `PAYMENT_REVIEW`; tesorería puede aprobar el
-pago y la inscripción vuelve a cola `PENDING`, o rechazarlo y la inscripción
-regresa a `PAYMENT_PENDING`; revisor cambia la inscripción a `APPROVED`,
-`OBSERVED` o `REJECTED` cuando la transición lo permite. Cada cambio actualiza
-historial en la misma transacción.
+a `IN_REVIEW` y la inscripción a `PAYMENT_REVIEW`; ADMIN puede aprobar el pago
+y la inscripción vuelve a cola `PENDING`, o rechazarlo y la inscripción regresa
+a `PAYMENT_PENDING`. ADMIN cambia la inscripción a `APPROVED`, `OBSERVED` o
+`REJECTED` cuando la transición lo permite. EVENT_MANAGER consulta información
+operativa y conduce la competencia, pero no revisa inscripciones ni pagos.
+Cada cambio actualiza historial en la misma transacción.
 
 Duplicidad permitida: un equipo puede competir en otros eventos/categorías y
 tener varios robots. No se permite repetir el mismo equipo/robot/categoría/evento;
@@ -364,9 +365,32 @@ la restricción SQL protege además de la validación del endpoint.
 | `GET` | `/api/v1/reports/registrations/details?event_id=1&status=APPROVED&page=1&limit=25` | Filas de inscripción sin contacto privado |
 | `GET` | `/api/v1/reports/payments/details?event_id=1&status=PAID&page=1&limit=25` | Filas de pago sin referencia bancaria |
 
+### Competencias, puntuación y resultados en vivo
+
+| Método | Ruta | Acceso/propósito |
+| --- | --- | --- |
+| `POST` / `PUT` | `/api/v1/events` / `/api/v1/events/{id}` | ADMIN/EVENT_MANAGER; programación e información operativa |
+| `PATCH` | `/api/v1/events/{id}/competition-status` | ADMIN/EVENT_MANAGER; transición válida, con auditoría y motivo opcional |
+| `GET` | `/api/v1/events/{id}/competition-status/history?page=1&limit=50` | Historial paginado de estados |
+| `POST` | `/api/v1/events/{id}/rounds` | ADMIN/EVENT_MANAGER; crea ronda para categoría |
+| `GET` | `/api/v1/events/{id}/rounds?page=1&limit=50` | Consulta paginada de rondas |
+| `POST` | `/api/v1/events/{id}/matches` | ADMIN/EVENT_MANAGER; crea enfrentamiento con equipos aprobados |
+| `GET` | `/api/v1/events/{id}/matches?page=1&limit=50` | Consulta enfrentamientos paginados |
+| `POST` | `/api/v1/events/{id}/scores` | ADMIN/EVENT_MANAGER; agrega puntuación o ajuste; requiere `Idempotency-Key` UUID |
+| `GET` | `/api/v1/events/{id}/leaderboard?category_id=1` | Clasificación pública; empates conservan mismo rango |
+| `GET` | `/api/v1/events/{id}/scores/history?category_id=1&page=1&limit=50` | Historial público paginado, sin identidad del operador |
+| `WS` | `/api/v1/events/{id}/live` | WebSocket público de estado y clasificación; actualización detectada cada dos segundos |
+
+Los puntos se almacenan como movimientos append-only: cualquier corrección
+agrega un movimiento compensatorio con motivo en vez de editar el anterior. El
+registro es transaccional, se valida evento `LIVE`, inscripción aprobada,
+categoría y ronda/enfrentamiento. La clasificación agrega los movimientos en
+SQL y muestra todos los equipos aprobados, incluidos los que aún tienen cero.
+No se asigna ganador por desempate sin un reglamento oficial.
+
 Los resúmenes agrupan y cuentan en SQL. Los detalles filtran, cuentan, ordenan y
 paginan en SQL antes de transferir datos. Los roles limitan los datos: revisión
-de inscripción para REVIEWER, finanzas para TREASURY y acceso global para ADMIN.
+de inscripción para EVENT_MANAGER, finanzas y acceso global para ADMIN.
 
 ## 8. Paginación y rendimiento
 
@@ -458,11 +482,12 @@ $env:RUN_SQLSERVER_TESTS = '1'
 ```
 
 Las pruebas SQL requieren SQL Server, usan transacción de prueba y revierten
-datos. Newman ejecuta la colección E2E a través del comando de bootstrap.
-La última corrida SQL anterior a los cambios recientes de separación de roles
-fue **18 passed** y la migración local **09 se aplicó**. El frontend se construyó
-con Vite correctamente después de integrar las pantallas de acceso. Aún no se ha
-autenticado una cuenta Google real porque falta configurar `GOOGLE_CLIENT_ID`.
+datos. En esta revisión la suite completa con SQL quedó en **21 passed**. La
+colección Postman Smoke se ejecutó con Newman y obtuvo **9 de 9 assertions**;
+las rutas de inscripción, pagos, puntuaciones y permisos también se probaron
+con TestClient contra SQL Server. Las migraciones locales **06 a 12** están
+aplicadas. Aún no se ha autenticado una cuenta Google real porque falta
+configurar `GOOGLE_CLIENT_ID`.
 
 ## 12. Trabajo restante para un despliegue funcional completo
 

@@ -59,4 +59,4 @@ class ParticipantUpdate(StrictModel):
 
 class UserAdminUpdate(StrictModel):
     is_active: bool | None = None
-    role: str | None = Field(default=None, pattern="^(ADMIN|REVIEWER|TREASURY|PARTICIPANT)$")
+    role: str | None = Field(default=None, pattern="^(ADMIN|EVENT_MANAGER|PARTICIPANT)$")

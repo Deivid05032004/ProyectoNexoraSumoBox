@@ -53,7 +53,7 @@
       ]
     },
     {
-      "name": "Login REVIEWER",
+      "name": "Login EVENT_MANAGER",
       "request": {
         "method": "POST",
         "url": "{{baseUrl}}/api/v1/auth/login",
@@ -65,7 +65,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"email\": \"{{reviewerUsername}}\",\n  \"password\": \"{{reviewerPassword}}\"\n}"
+          "raw": "{\n  \"email\": \"{{event_managerUsername}}\",\n  \"password\": \"{{event_managerPassword}}\"\n}"
         }
       },
       "event": [
@@ -74,15 +74,15 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test(\"Login REVIEWER HTTP 200\", function () { pm.response.to.have.status(200); });",
-              "pm.environment.set(\"reviewerToken\", pm.response.json().access_token);"
+              "pm.test(\"Login EVENT_MANAGER HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "pm.environment.set(\"event_managerToken\", pm.response.json().access_token);"
             ]
           }
         }
       ]
     },
     {
-      "name": "Login TREASURY",
+      "name": "Login ADMIN",
       "request": {
         "method": "POST",
         "url": "{{baseUrl}}/api/v1/auth/login",
@@ -94,7 +94,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"email\": \"{{treasuryUsername}}\",\n  \"password\": \"{{treasuryPassword}}\"\n}"
+          "raw": "{\n  \"email\": \"{{administratorUsername}}\",\n  \"password\": \"{{administratorPassword}}\"\n}"
         }
       },
       "event": [
@@ -103,8 +103,8 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test(\"Login TREASURY HTTP 200\", function () { pm.response.to.have.status(200); });",
-              "pm.environment.set(\"treasuryToken\", pm.response.json().access_token);"
+              "pm.test(\"Login ADMIN HTTP 200\", function () { pm.response.to.have.status(200); });",
+              "pm.environment.set(\"administratorToken\", pm.response.json().access_token);"
             ]
           }
         }
@@ -368,7 +368,7 @@
           "bearer": [
             {
               "key": "token",
-              "value": "{{treasuryToken}}",
+              "value": "{{administratorToken}}",
               "type": "string"
             }
           ]
@@ -406,7 +406,7 @@
           "bearer": [
             {
               "key": "token",
-              "value": "{{reviewerToken}}",
+              "value": "{{event_managerToken}}",
               "type": "string"
             }
           ]
@@ -519,7 +519,7 @@
       ]
     },
     {
-      "name": "Reporte de estados REVIEWER",
+      "name": "Reporte de estados EVENT_MANAGER",
       "request": {
         "method": "GET",
         "url": "{{baseUrl}}/api/v1/reports/registrations/by-status?event_id={{eventId}}",
@@ -528,7 +528,7 @@
           "bearer": [
             {
               "key": "token",
-              "value": "{{reviewerToken}}",
+              "value": "{{event_managerToken}}",
               "type": "string"
             }
           ]
@@ -547,7 +547,7 @@
       ]
     },
     {
-      "name": "Reporte financiero TREASURY",
+      "name": "Reporte financiero ADMIN",
       "request": {
         "method": "GET",
         "url": "{{baseUrl}}/api/v1/reports/payments/summary?event_id={{eventId}}",
@@ -556,7 +556,7 @@
           "bearer": [
             {
               "key": "token",
-              "value": "{{treasuryToken}}",
+              "value": "{{administratorToken}}",
               "type": "string"
             }
           ]
@@ -603,7 +603,7 @@
       ]
     },
     {
-      "name": "Reporte detallado paginado REVIEWER",
+      "name": "Reporte detallado paginado EVENT_MANAGER",
       "request": {
         "method": "GET",
         "url": "{{baseUrl}}/api/v1/reports/registrations/details?event_id={{eventId}}&page=1&limit=10",
@@ -612,7 +612,7 @@
           "bearer": [
             {
               "key": "token",
-              "value": "{{reviewerToken}}",
+              "value": "{{event_managerToken}}",
               "type": "string"
             }
           ]
@@ -624,14 +624,14 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test(\"Reporte detallado paginado REVIEWER\", function () { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.page).to.eql(1); pm.expect(body.total).to.be.above(0); pm.expect(body.items).to.be.an(\"array\"); });"
+              "pm.test(\"Reporte detallado paginado EVENT_MANAGER\", function () { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.page).to.eql(1); pm.expect(body.total).to.be.above(0); pm.expect(body.items).to.be.an(\"array\"); });"
             ]
           }
         }
       ]
     },
     {
-      "name": "Reporte detallado paginado TREASURY",
+      "name": "Reporte detallado paginado ADMIN",
       "request": {
         "method": "GET",
         "url": "{{baseUrl}}/api/v1/reports/payments/details?event_id={{eventId}}&page=1&limit=10",
@@ -640,7 +640,7 @@
           "bearer": [
             {
               "key": "token",
-              "value": "{{treasuryToken}}",
+              "value": "{{administratorToken}}",
               "type": "string"
             }
           ]
@@ -652,7 +652,7 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test(\"Reporte detallado paginado TREASURY\", function () { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.page).to.eql(1); pm.expect(body.total).to.be.above(0); pm.expect(body.items).to.be.an(\"array\"); });"
+              "pm.test(\"Reporte detallado paginado ADMIN\", function () { pm.response.to.have.status(200); const body = pm.response.json(); pm.expect(body.page).to.eql(1); pm.expect(body.total).to.be.above(0); pm.expect(body.items).to.be.an(\"array\"); });"
             ]
           }
         }

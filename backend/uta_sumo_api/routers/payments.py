@@ -52,7 +52,7 @@ def _authorize(payment, user):
         raise HTTPException(status_code=404, detail="Pago no encontrado.")
     if user["role"] == "PARTICIPANT" and payment["owner_user_id"] != user["user_id"]:
         raise HTTPException(status_code=404, detail="Pago no encontrado.")
-    if user["role"] not in ("PARTICIPANT", "ADMIN", "TREASURY"):
+    if user["role"] not in ("PARTICIPANT", "ADMIN"):
         raise HTTPException(status_code=403, detail="No tiene permiso para consultar pagos.")
 
 
@@ -60,7 +60,7 @@ def _authorize(payment, user):
 def list_payments(response: Response, status: str | None = None, page: int = Query(1, ge=1, le=1_000_000),
                   limit: int = Query(50, ge=1, le=100),
                   user=Depends(get_current_user), db: Session = Depends(get_db)):
-    if user["role"] not in ("ADMIN", "TREASURY", "PARTICIPANT"):
+    if user["role"] not in ("ADMIN", "PARTICIPANT"):
         raise HTTPException(status_code=403, detail="No tiene permiso para consultar pagos.")
     clauses, params = [], {"offset": (page-1)*limit, "limit": limit}
     if user["role"] == "PARTICIPANT":
@@ -182,7 +182,7 @@ def download_receipt(payment_id: int, user=Depends(get_current_user), db: Sessio
 
 @router.post("/{payment_id}/review")
 def review_payment(payment_id: int, payload: PaymentReview,
-                   user=Depends(require_roles("ADMIN", "TREASURY")),
+                   user=Depends(require_roles("ADMIN")),
                    db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT p.PaymentStatus,p.RegistrationId,s.Code

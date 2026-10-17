@@ -28,8 +28,8 @@ from database import DB_NAME, DB_SERVER, SessionLocal
 
 ACCOUNTS = (
     ("admin.demo@example.com", "ADMIN", "Demo", "Administrador"),
-    ("reviewer.demo@example.com", "REVIEWER", "Demo", "Revisor"),
-    ("treasury.demo@example.com", "TREASURY", "Demo", "Tesorería"),
+    ("event_manager.demo@example.com", "EVENT_MANAGER", "Demo", "Gestor de eventos"),
+    ("administrator.demo@example.com", "ADMIN", "Demo", "Operador administrativo"),
     ("participant.demo@example.com", "PARTICIPANT", "Demo", "Participante"),
 )
 INSTITUTION = "UTA SUMO DEMO LOCAL"
@@ -98,9 +98,9 @@ def main() -> None:
         lookup_by_email = {email: email_lookup_hash(email) for email, *_ in ACCOUNTS}
         existing = db.execute(text("""
             SELECT u.UserId,u.EmailLookupHash,r.Code FROM dbo.Users u JOIN dbo.Roles r ON r.RoleId=u.RoleId
-            WHERE u.EmailLookupHash IN (:admin,:reviewer,:treasury,:participant)
-        """), {"admin": lookup_by_email[ACCOUNTS[0][0]], "reviewer": lookup_by_email[ACCOUNTS[1][0]],
-              "treasury": lookup_by_email[ACCOUNTS[2][0]], "participant": lookup_by_email[ACCOUNTS[3][0]]}).all()
+            WHERE u.EmailLookupHash IN (:admin,:event_manager,:administrator,:participant)
+        """), {"admin": lookup_by_email[ACCOUNTS[0][0]], "event_manager": lookup_by_email[ACCOUNTS[1][0]],
+              "administrator": lookup_by_email[ACCOUNTS[2][0]], "participant": lookup_by_email[ACCOUNTS[3][0]]}).all()
         email_by_hash = {value: email for email, value in lookup_by_email.items()}
         expected = {email: role for email, role, *_ in ACCOUNTS}
         if any(expected.get(email_by_hash.get(lookup)) != role for _, lookup, role in existing):

@@ -2,7 +2,7 @@
   "info": {
     "name": "UTA SUMO ROBOTICS CUP API (implementado)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Colección completa: health, autenticación, catálogos, recursos, inscripciones, pagos, administración y reportes."
+    "description": "Colección completa: health, autenticación, catálogos, recursos, inscripciones, pagos, administración y reportes. Incluye control de estado, rondas, puntuaciones append-only, clasificación pública e historial."
   },
   "variable": [
     {
@@ -276,7 +276,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"is_active\": true,\n  \"role\": \"REVIEWER\"\n}"
+              "raw": "{\n  \"is_active\": true,\n  \"role\": \"EVENT_MANAGER\"\n}"
             }
           }
         },
@@ -967,7 +967,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{treasuryToken}}",
+                  "value": "{{administratorToken}}",
                   "type": "string"
                 }
               ]
@@ -984,7 +984,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{treasuryToken}}",
+                  "value": "{{administratorToken}}",
                   "type": "string"
                 }
               ]
@@ -1011,7 +1011,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{reviewerToken}}",
+                  "value": "{{event_managerToken}}",
                   "type": "string"
                 }
               ]
@@ -1080,10 +1080,10 @@
       ]
     },
     {
-      "name": "Login REVIEWER (credenciales del operador)",
+      "name": "Login EVENT_MANAGER (credenciales del operador)",
       "item": [
         {
-          "name": "Obtener token REVIEWER",
+          "name": "Obtener token EVENT_MANAGER",
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/api/v1/auth/login",
@@ -1095,7 +1095,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"{{reviewerUsername}}\",\n  \"password\": \"{{reviewerPassword}}\"\n}"
+              "raw": "{\n  \"email\": \"{{event_managerUsername}}\",\n  \"password\": \"{{event_managerPassword}}\"\n}"
             }
           },
           "event": [
@@ -1103,7 +1103,7 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if(pm.response.code===200)pm.environment.set('reviewerToken',pm.response.json().access_token);"
+                  "if(pm.response.code===200)pm.environment.set('event_managerToken',pm.response.json().access_token);"
                 ]
               }
             }
@@ -1112,10 +1112,10 @@
       ]
     },
     {
-      "name": "Login TREASURY (credenciales del operador)",
+      "name": "Login ADMIN (credenciales del operador)",
       "item": [
         {
-          "name": "Obtener token TREASURY",
+          "name": "Obtener token ADMIN",
           "request": {
             "method": "POST",
             "url": "{{baseUrl}}/api/v1/auth/login",
@@ -1127,7 +1127,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"{{treasuryUsername}}\",\n  \"password\": \"{{treasuryPassword}}\"\n}"
+              "raw": "{\n  \"email\": \"{{administratorUsername}}\",\n  \"password\": \"{{administratorPassword}}\"\n}"
             }
           },
           "event": [
@@ -1135,7 +1135,7 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if(pm.response.code===200)pm.environment.set('treasuryToken',pm.response.json().access_token);"
+                  "if(pm.response.code===200)pm.environment.set('administratorToken',pm.response.json().access_token);"
                 ]
               }
             }
@@ -1145,7 +1145,7 @@
     },
     {
       "name": "Reportes",
-      "description": "Agregados por evento. ADMIN consulta todos; REVIEWER reportes deportivos; TREASURY resumen financiero.",
+      "description": "Agregados por evento. ADMIN consulta todos; EVENT_MANAGER reportes operativos; solo ADMIN ve datos financieros.",
       "item": [
         {
           "name": "Resumen ejecutivo",
@@ -1186,7 +1186,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{reviewerToken}}",
+                  "value": "{{event_managerToken}}",
                   "type": "string"
                 }
               ]
@@ -1215,7 +1215,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{reviewerToken}}",
+                  "value": "{{event_managerToken}}",
                   "type": "string"
                 }
               ]
@@ -1244,7 +1244,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{reviewerToken}}",
+                  "value": "{{event_managerToken}}",
                   "type": "string"
                 }
               ]
@@ -1273,7 +1273,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{treasuryToken}}",
+                  "value": "{{administratorToken}}",
                   "type": "string"
                 }
               ]
@@ -1302,7 +1302,7 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{reviewerToken}}",
+                  "value": "{{event_managerToken}}",
                   "type": "string"
                 }
               ]
@@ -1319,7 +1319,234 @@
               "bearer": [
                 {
                   "key": "token",
-                  "value": "{{treasuryToken}}",
+                  "value": "{{administratorToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Competencias y puntuaciones en vivo",
+      "description": "Ejecuta en orden con token event_managerToken y un teamId con inscripción APPROVED y pago validado. La puntuación es un movimiento append-only; envía Idempotency-Key UUID para evitar duplicados. Para WebSocket usa ws://127.0.0.1:8000/api/v1/events/{{eventId}}/live en una petición WebSocket nueva de Postman; entrega una instantánea inicial y cambios cada 2 segundos.",
+      "item": [
+        {
+          "name": "Programar evento (DRAFT a SCHEDULED)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/competition-status",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"SCHEDULED\",\n  \"reason\": \"Calendario confirmado\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{event_managerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Iniciar competencia (SCHEDULED a LIVE)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/competition-status",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"LIVE\",\n  \"reason\": \"Inicio de prueba funcional\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{event_managerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crear ronda",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/rounds",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category_id\": \"{{categoryId}}\",\n  \"round_number\": 1,\n  \"name\": \"Ronda 1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{event_managerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Ronda creada\",()=>pm.response.to.have.status(201));",
+                  "if(pm.response.code===201)pm.environment.set(\"roundId\",pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Registrar movimiento de puntos",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/scores",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category_id\": \"{{categoryId}}\",\n  \"team_id\": \"{{teamId}}\",\n  \"round_id\": \"{{roundId}}\",\n  \"points_delta\": 3,\n  \"reason\": \"Puntuación de prueba autorizada\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{event_managerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Consultar clasificación pública",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/leaderboard?category_id={{categoryId}}"
+          }
+        },
+        {
+          "name": "Consultar historial público de puntos",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/scores/history?category_id={{categoryId}}&page=1&limit=50"
+          }
+        },
+        {
+          "name": "Consultar historial de estados",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/competition-status/history?page=1&limit=50"
+          }
+        },
+        {
+          "name": "Consultar rondas",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/rounds?category_id={{categoryId}}&page=1&limit=50"
+          }
+        },
+        {
+          "name": "Finalizar competencia",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/competition-status",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"FINISHED\",\n  \"reason\": \"Fin de la prueba funcional\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{event_managerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Auditoría de autoría (personal)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/scores/audit?category_id={{categoryId}}&page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{event_managerToken}}",
                   "type": "string"
                 }
               ]

@@ -69,4 +69,4 @@ class ChangePasswordRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def password_strength(cls, value: str) -> str:
-        return _validate_strong_password(value)
+        return validate_password(value)

@@ -56,13 +56,13 @@ def _detail(db: Session, registration_id: int):
     return result
 
 
-def _authorized_registration(db, registration_id, user, *, reviewer=True):
+def _authorized_registration(db, registration_id, user, *, event_manager=True):
     detail = _detail(db, registration_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Inscripción no encontrada.")
     if user["role"] == "PARTICIPANT" and detail["created_by_user_id"] != user["user_id"]:
         raise HTTPException(status_code=404, detail="Inscripción no encontrada.")
-    if user["role"] == "TREASURY" and detail["status"] != "PAYMENT_REVIEW":
+    if user["role"] == "ADMIN" and detail["status"] != "PAYMENT_REVIEW":
         raise HTTPException(status_code=404, detail="Inscripción no encontrada.")
     return detail
 
@@ -161,7 +161,7 @@ def list_registrations(response: Response, page: int = Query(1, ge=1, le=1_000_0
     if user["role"] == "PARTICIPANT":
         clauses.append("r.CreatedByUserId=:owner")
         params["owner"] = user["user_id"]
-    elif user["role"] == "TREASURY":
+    elif user["role"] == "ADMIN":
         clauses.append("s.Code='PAYMENT_REVIEW'")
     if status:
         clauses.append("s.Code=:status")
@@ -263,7 +263,7 @@ def cancel_registration(registration_id: int, user=Depends(require_roles("PARTIC
 
 @router.post("/{registration_id}/review")
 def review_registration(registration_id: int, payload: RegistrationReview,
-                        user=Depends(require_roles("ADMIN", "REVIEWER")), db: Session = Depends(get_db)):
+                        user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
     record = _detail(db, registration_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Inscripción no encontrada.")

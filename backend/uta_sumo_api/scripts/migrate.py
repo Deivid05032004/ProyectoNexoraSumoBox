@@ -34,6 +34,9 @@ MIGRATIONS = [
     ROOT / "database/scripts/07_email_encryption_constraints.sql",
     ROOT / "database/scripts/08_pagination_indexes.sql",
     ROOT / "database/scripts/09_google_identities.sql",
+    ROOT / "database/scripts/10_competition_scoring.sql",
+    ROOT / "database/scripts/11_competition_status_history.sql",
+    ROOT / "database/scripts/12_finalize_roles.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",
@@ -110,7 +113,7 @@ def _reset_database(confirm_drop: bool = False) -> None:
                 table_names = [row[0] for row in target_cursor.execute(
                     "SELECT name FROM sys.tables WHERE schema_id=SCHEMA_ID('dbo')")]
                 protected = []
-                allowed_baseline_counts = {"Categories": 1, "Roles": 4, "RegistrationStatuses": 7}
+                allowed_baseline_counts = {"Categories": 1, "Roles": 3, "RegistrationStatuses": 7}
                 for table_name in table_names:
                     safe_table = table_name.replace("]", "]]" )
                     count = target_cursor.execute(
@@ -129,7 +132,7 @@ def _reset_database(confirm_drop: bool = False) -> None:
                 if "Roles" in table_names:
                     unexpected = target_cursor.execute("""
                         SELECT COUNT_BIG(*) FROM dbo.Roles
-                        WHERE Code NOT IN ('ADMIN','PARTICIPANT','REVIEWER','TREASURY')
+                        WHERE Code NOT IN ('ADMIN','PARTICIPANT','EVENT_MANAGER')
                     """).fetchval()
                     if unexpected:
                         protected.append(("custom Roles", unexpected))
@@ -222,8 +225,8 @@ def _backfill_encrypted_pii(conn, file_backups) -> None:
         """)).mappings().all()
         fixed_emails = {
             "admin.demo": "admin.demo@example.com",
-            "reviewer.demo": "reviewer.demo@example.com",
-            "treasury.demo": "treasury.demo@example.com",
+            "event_manager.demo": "event_manager.demo@example.com",
+            "administrator.demo": "administrator.demo@example.com",
             "participant.demo": "participant.demo@example.com",
         }
         for row in users:

@@ -55,7 +55,7 @@ def institution(institution_id: int, db: Session = Depends(get_db)):
 def events(response: Response, page: int = Query(1, ge=1, le=1_000_000),
            limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db)):
     return _read_page(db, text("""
-        SELECT EventId AS id, Name AS name, EditionYear AS edition_year,
+        SELECT EventId AS id, Name AS name, EditionYear AS edition_year, CompetitionStatus AS competition_status,
                RegistrationStart AS registration_start,
                RegistrationEnd AS registration_end
         FROM dbo.Events WHERE IsActive=1 ORDER BY EditionYear DESC, Name, EventId
@@ -67,7 +67,7 @@ def events(response: Response, page: int = Query(1, ge=1, le=1_000_000),
 @router.get("/events/{event_id}")
 def event(event_id: int, db: Session = Depends(get_db)):
     rows = _read_all(db, text("""
-        SELECT EventId AS id, Name AS name, EditionYear AS edition_year,
+        SELECT EventId AS id, Name AS name, EditionYear AS edition_year, CompetitionStatus AS competition_status,
                RegistrationStart AS registration_start,
                RegistrationEnd AS registration_end
         FROM dbo.Events WHERE EventId=:id AND IsActive=1
@@ -162,7 +162,7 @@ def set_institution_status(institution_id: int, is_active: bool, db: Session = D
     return dict(row)
 
 
-@router.post("/events", status_code=201, dependencies=[Depends(require_roles("ADMIN"))])
+@router.post("/events", status_code=201, dependencies=[Depends(require_roles("ADMIN", "EVENT_MANAGER"))])
 def create_event(payload: EventInput, db: Session = Depends(get_db)):
     if payload.registration_start and payload.registration_end and payload.registration_end < payload.registration_start:
         raise HTTPException(status_code=422, detail="El fin de inscripción precede al inicio.")
@@ -185,7 +185,7 @@ def create_event(payload: EventInput, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Ya existe el evento para ese año.")
 
 
-@router.put("/events/{event_id}", dependencies=[Depends(require_roles("ADMIN"))])
+@router.put("/events/{event_id}", dependencies=[Depends(require_roles("ADMIN", "EVENT_MANAGER"))])
 def update_event(event_id: int, payload: EventInput, db: Session = Depends(get_db)):
     if payload.registration_start and payload.registration_end and payload.registration_end < payload.registration_start:
         raise HTTPException(status_code=422, detail="El fin de inscripción precede al inicio.")

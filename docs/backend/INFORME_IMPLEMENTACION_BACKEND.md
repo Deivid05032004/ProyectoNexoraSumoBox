@@ -50,7 +50,7 @@ Los reportes detallados responden con `items`, `page`, `page_size`, `total` y
 - Inscripción, participantes asociados, pago inicial e historial se crean de
   forma atómica. El pago y el estado de inscripción avanzan en transacciones y
   cada cambio queda en historial.
-- Participantes solo consultan sus recursos; ADMIN/REVIEWER/TREASURY tienen
+- Participantes solo consultan sus recursos; ADMIN/EVENT_MANAGER/PARTICIPANT tienen
   permisos separados. Los reportes financieros no incluyen la referencia de
   transferencia ni datos personales.
 - `SECRET_KEY` y `PII_ENCRYPTION_KEY` son locales, están ignoradas por Git y

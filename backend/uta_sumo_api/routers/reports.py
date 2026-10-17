@@ -26,10 +26,10 @@ def _event_exists(db: Session, event_id: int | None) -> None:
 @router.get("/overview")
 def overview(
     event_id: int | None = Query(None, ge=1),
-    user=Depends(require_roles("ADMIN", "REVIEWER", "TREASURY")),
+    user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
     db: Session = Depends(get_db),
 ):
-    """Role-aware KPI cards. Financial totals are visible only to ADMIN/TREASURY."""
+    """Role-aware KPI cards. Financial totals are visible only to ADMIN."""
     _event_exists(db, event_id)
     registrations = db.execute(text("""
         SELECT COUNT_BIG(*) AS total,
@@ -43,7 +43,7 @@ def overview(
         "event_id": event_id,
         "registrations": {key: int(registrations[key] or 0) for key in ("total", "approved", "awaiting_review", "closed")},
     }
-    if user["role"] in ("ADMIN", "TREASURY"):
+    if user["role"] == "ADMIN":
         payments = db.execute(text("""
             SELECT COUNT_BIG(*) AS total,
               SUM(CASE WHEN p.PaymentStatus IN ('PENDING','IN_REVIEW') THEN CONVERT(BIGINT,1) ELSE CONVERT(BIGINT,0) END) AS pending_review,
@@ -60,7 +60,7 @@ def overview(
 @router.get("/registrations/by-status")
 def registrations_by_status(
     event_id: int | None = Query(None, ge=1),
-    user=Depends(require_roles("ADMIN", "REVIEWER")),
+    user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
     db: Session = Depends(get_db),
 ):
     _event_exists(db, event_id)
@@ -77,7 +77,7 @@ def registrations_by_status(
 @router.get("/registrations/by-category")
 def registrations_by_category(
     event_id: int | None = Query(None, ge=1),
-    user=Depends(require_roles("ADMIN", "REVIEWER")),
+    user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
     db: Session = Depends(get_db),
 ):
     _event_exists(db, event_id)
@@ -103,7 +103,7 @@ def registration_trend(
     event_id: int | None = Query(None, ge=1),
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
-    user=Depends(require_roles("ADMIN", "REVIEWER")),
+    user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
     db: Session = Depends(get_db),
 ):
     if from_date and to_date and from_date > to_date:
@@ -128,7 +128,7 @@ def registration_trend(
 @router.get("/payments/summary")
 def payment_summary(
     event_id: int | None = Query(None, ge=1),
-    user=Depends(require_roles("ADMIN", "TREASURY")),
+    user=Depends(require_roles("ADMIN")),
     db: Session = Depends(get_db),
 ):
     _event_exists(db, event_id)
@@ -154,7 +154,7 @@ def registration_details(
     to_date: date | None = Query(None),
     page: int = Query(1, ge=1, le=1_000_000),
     limit: int = Query(50, ge=1, le=100),
-    user=Depends(require_roles("ADMIN", "REVIEWER")),
+    user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
     db: Session = Depends(get_db),
 ):
     """Paginated operational rows; participant identity and free text are omitted."""
@@ -202,7 +202,7 @@ def payment_details(
     status: str | None = Query(None, min_length=1, max_length=20),
     page: int = Query(1, ge=1, le=1_000_000),
     limit: int = Query(50, ge=1, le=100),
-    user=Depends(require_roles("ADMIN", "TREASURY")),
+    user=Depends(require_roles("ADMIN")),
     db: Session = Depends(get_db),
 ):
     """Paginated financial rows without exposing payment reference or PII."""

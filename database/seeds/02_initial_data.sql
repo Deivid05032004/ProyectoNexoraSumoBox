@@ -51,13 +51,9 @@ IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'ADMIN')
     INSERT INTO dbo.Roles (Code, Name)
     VALUES ('ADMIN', N'Administrador');
 
-IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'REVIEWER')
+IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'EVENT_MANAGER')
     INSERT INTO dbo.Roles (Code, Name)
-    VALUES ('REVIEWER', N'Revisor');
-
-IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'TREASURY')
-    INSERT INTO dbo.Roles (Code, Name)
-    VALUES ('TREASURY', N'Tesorería');
+    VALUES ('EVENT_MANAGER', N'Gestor de eventos');
 
 IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'PARTICIPANT')
     INSERT INTO dbo.Roles (Code, Name)

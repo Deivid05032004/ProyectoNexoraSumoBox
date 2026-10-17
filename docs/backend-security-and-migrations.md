@@ -5,8 +5,8 @@
 | Grupo | Tratamiento | Acceso |
 | --- | --- | --- |
 | Credenciales | Contraseñas con Argon2id; bcrypt solo se acepta para migrar hashes heredados. El email se cifra con AES-GCM y se busca mediante HMAC. | La persona inicia sesión con email; ADMIN gestiona roles y estado. |
-| Datos personales | Nombres, teléfonos, email y texto libre cifrados con AES-GCM a nivel de aplicación. | El propietario, ADMIN y rutas de revisión según rol; teléfonos se ocultan a REVIEWER. |
-| Comprobantes | Archivos cifrados con AES-GCM en almacenamiento privado; metadatos y versión de cifrado en SQL. | Propietario, ADMIN y TREASURY. Descarga con autorización y sin caché. |
+| Datos personales | Nombres, teléfonos, email y texto libre cifrados con AES-GCM a nivel de aplicación. | El propietario, ADMIN y rutas de revisión según rol; teléfonos se ocultan a EVENT_MANAGER. |
+| Comprobantes | Archivos cifrados con AES-GCM en almacenamiento privado; metadatos y versión de cifrado en SQL. | Propietario y ADMIN. Descarga con autorización y sin caché. |
 | Operación | Importes, estados, eventos, categorías e identificadores quedan consultables para mantener integridad, filtros y reportes. | Control por endpoint y rol. |
 | Auditoría | Acciones de seguridad, actor y objetivo referenciados por ID; no registra contraseñas, tokens ni hashes. | Solo ADMIN. |
 

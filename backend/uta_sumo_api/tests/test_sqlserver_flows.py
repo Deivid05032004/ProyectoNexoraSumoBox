@@ -187,7 +187,12 @@ def test_catalog_admin_permissions_and_role_management(sql_api):
     participant = _register(ctx, f"normal_{uuid.uuid4().hex[:8]}")
     participant_token = {"Authorization": f"Bearer {participant['access_token']}"}
     profile, team, _ = _owned_resources(ctx, participant_token)
-    reviewer = _account(ctx, "REVIEWER")
+    event_manager = _account(ctx, "EVENT_MANAGER")
+    operational_event = ctx["client"].post("/api/v1/events", headers=event_manager["headers"], json={
+        "name": f"OPERATIONS-{uuid.uuid4().hex[:8]}", "edition_year": date.today().year,
+        "registration_start": "2020-01-01", "registration_end": "2020-01-02", "is_active": True,
+    })
+    assert operational_event.status_code == 201, operational_event.text
     catalog_page = ctx["client"].get("/api/v1/events?page=1&limit=1")
     assert catalog_page.status_code == 200 and len(catalog_page.json()) <= 1
     assert catalog_page.headers["x-page"] == "1"
@@ -202,14 +207,14 @@ def test_catalog_admin_permissions_and_role_management(sql_api):
     assert institution_page.status_code == tariff_page.status_code == 200
     assert len(institution_page.json()) <= 1 and len(tariff_page.json()) == 1
     assert tariff_page.headers["x-total-pages"] == "1"
-    reviewer_teams_response = ctx["client"].get("/api/v1/teams?page=1&limit=1", headers=reviewer["headers"])
-    reviewer_teams = reviewer_teams_response.json()
-    assert reviewer_teams_response.headers["x-page-size"] == "1"
-    assert next(item for item in reviewer_teams if item["id"] == team["id"])["contact_phone"] is None
-    reviewer_participants_response = ctx["client"].get("/api/v1/participants?page=1&limit=1", headers=reviewer["headers"])
-    reviewer_participants = reviewer_participants_response.json()
-    assert reviewer_participants_response.headers["x-page"] == "1"
-    assert next(item for item in reviewer_participants if item["id"] == profile["id"])["mobile_phone"] is None
+    event_manager_teams_response = ctx["client"].get("/api/v1/teams?page=1&limit=1", headers=event_manager["headers"])
+    event_manager_teams = event_manager_teams_response.json()
+    assert event_manager_teams_response.headers["x-page-size"] == "1"
+    assert next(item for item in event_manager_teams if item["id"] == team["id"])["contact_phone"] is None
+    event_manager_participants_response = ctx["client"].get("/api/v1/participants?page=1&limit=1", headers=event_manager["headers"])
+    event_manager_participants = event_manager_participants_response.json()
+    assert event_manager_participants_response.headers["x-page"] == "1"
+    assert next(item for item in event_manager_participants if item["id"] == profile["id"])["mobile_phone"] is None
     admin_participants = ctx["client"].get("/api/v1/participants", headers=admin["headers"]).json()
     assert next(item for item in admin_participants if item["id"] == profile["id"])["mobile_phone"] == "0991112222"
     admin_page = ctx["client"].get("/api/v1/admin/users?page=1&limit=1", headers=admin["headers"])
@@ -234,10 +239,12 @@ def test_catalog_admin_permissions_and_role_management(sql_api):
     })
     assert bad_tariff.status_code == 422
     assert ctx["client"].get("/api/v1/admin/users", headers=participant_token).status_code == 403
-    assert len(ctx["client"].get("/api/v1/admin/roles", headers=admin["headers"]).json()) >= 4
+    assert {role["code"] for role in ctx["client"].get("/api/v1/admin/roles", headers=admin["headers"]).json()} == {
+        "ADMIN", "EVENT_MANAGER", "PARTICIPANT"
+    }
     updated_role = ctx["client"].patch(f"/api/v1/admin/users/{participant['user']['user_id']}",
-                                        headers=admin["headers"], json={"role": "REVIEWER"})
-    assert updated_role.status_code == 200 and updated_role.json()["role"] == "REVIEWER"
+                                        headers=admin["headers"], json={"role": "EVENT_MANAGER"})
+    assert updated_role.status_code == 200 and updated_role.json()["role"] == "EVENT_MANAGER"
     audit = ctx["client"].get("/api/v1/admin/audit/users?target_user_id=" +
                               str(participant["user"]["user_id"]), headers=admin["headers"])
     assert audit.status_code == 200 and audit.json()[0]["action"] == "ACCOUNT_UPDATED"
@@ -270,13 +277,13 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api):
     too_large = client.post(f"/api/v1/payments/{payment_id}/receipt", headers=token,
                             files={"file": ("large.pdf", b"%PDF-" + b"x" * (5 * 1024 * 1024), "application/pdf")})
     assert too_large.status_code == 413
-    treasury = _account(ctx, "TREASURY")
-    reviewer = _account(ctx, "REVIEWER")
-    assert client.post(f"/api/v1/payments/{payment_id}/review", headers=treasury["headers"],
+    administrator = _account(ctx, "ADMIN")
+    event_manager = _account(ctx, "EVENT_MANAGER")
+    assert client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                        json={"status": "REJECTED"}).status_code == 409
     assert client.post(f"/api/v1/registrations/{registration['id']}/review",
-                       headers=reviewer["headers"],
-                       json={"status": "APPROVED"}).status_code == 409
+                       headers=event_manager["headers"],
+                       json={"status": "APPROVED"}).status_code == 403
     submitted = client.post(f"/api/v1/payments/{payment_id}/receipt", headers=token,
                             data={"payment_reference": "bank-transfer-test"},
                             files={"file": ("proof.pdf", b"%PDF-1.7\nmock evidence", "application/pdf")})
@@ -292,24 +299,24 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api):
     assert submitted.json()["status"] == "IN_REVIEW"
     download = client.get(f"/api/v1/payments/{payment_id}/receipt", headers=token)
     assert download.status_code == 200 and download.content.startswith(b"%PDF-")
-    rejected = client.post(f"/api/v1/payments/{payment_id}/review", headers=treasury["headers"],
+    rejected = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                            json={"status": "REJECTED", "comments": "evidencia ilegible"})
     assert rejected.status_code == 200 and rejected.json()["status"] == "REJECTED"
     resubmitted = client.post(f"/api/v1/payments/{payment_id}/receipt", headers=token,
                               files={"file": ("proof2.pdf", b"%PDF-1.7\nsecond evidence", "application/pdf")})
     assert resubmitted.status_code == 202
-    review = client.post(f"/api/v1/payments/{payment_id}/review", headers=treasury["headers"],
+    review = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                          json={"status": "PAID", "comments": "comprobante revisado"})
     assert review.status_code == 200 and review.json()["status"] == "PAID"
     approved = client.post(f"/api/v1/registrations/{registration['id']}/review",
-                           headers=reviewer["headers"],
+                           headers=administrator["headers"],
                            json={"status": "APPROVED", "comments": "datos correctos"})
     assert approved.status_code == 200, approved.text
     history = client.get(f"/api/v1/registrations/{registration['id']}/history", headers=token)
     assert history.status_code == 200
     assert history.headers["x-total-count"] == "6"
     assert [entry["new_status"] for entry in history.json()] == ["PAYMENT_PENDING", "PAYMENT_REVIEW", "PAYMENT_PENDING", "PAYMENT_REVIEW", "PENDING", "APPROVED"]
-    assert client.post(f"/api/v1/payments/{payment_id}/review", headers=treasury["headers"],
+    assert client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                        json={"status": "REJECTED"}).status_code == 409
 
 
@@ -336,8 +343,8 @@ def test_reports_aggregates_and_role_boundaries(sql_api):
     participant = _register(ctx, f"reports_{uuid.uuid4().hex[:8]}")
     registration = _create_registration(ctx, {"Authorization": f"Bearer {participant['access_token']}"})
     admin = _account(ctx, "ADMIN")
-    reviewer = _account(ctx, "REVIEWER")
-    treasury = _account(ctx, "TREASURY")
+    event_manager = _account(ctx, "EVENT_MANAGER")
+    administrator = _account(ctx, "ADMIN")
 
     url = f"?event_id={ctx['event_id']}"
     overview = client.get(f"/api/v1/reports/overview{url}", headers=admin["headers"])
@@ -346,37 +353,98 @@ def test_reports_aggregates_and_role_boundaries(sql_api):
     assert overview.json()["payments"]["pending_review"] == 1
     assert overview.json()["active_users"] >= 2
 
-    statuses = client.get(f"/api/v1/reports/registrations/by-status{url}", headers=reviewer["headers"])
+    statuses = client.get(f"/api/v1/reports/registrations/by-status{url}", headers=event_manager["headers"])
     assert statuses.status_code == 200, statuses.text
     assert {item["status"]: item["count"] for item in statuses.json()["items"]}["PAYMENT_PENDING"] == 1
-    categories = client.get(f"/api/v1/reports/registrations/by-category{url}", headers=reviewer["headers"])
+    categories = client.get(f"/api/v1/reports/registrations/by-category{url}", headers=event_manager["headers"])
     assert categories.status_code == 200
     assert next(item for item in categories.json()["items"]
                 if item["category_id"] == ctx["category_id"])["registrations"] == 1
-    trend = client.get(f"/api/v1/reports/registrations/trend{url}", headers=reviewer["headers"])
+    trend = client.get(f"/api/v1/reports/registrations/trend{url}", headers=event_manager["headers"])
     assert trend.status_code == 200 and trend.json()["items"][0]["registrations"] == 1
     registration_rows = client.get(
         f"/api/v1/reports/registrations/details{url}&page=1&limit=1",
-        headers=reviewer["headers"],
+        headers=event_manager["headers"],
     )
     assert registration_rows.status_code == 200
     assert registration_rows.json()["total"] == 1
     assert registration_rows.json()["items"][0]["registration_id"] == registration["id"]
     assert "participants" not in registration_rows.json()["items"][0]
 
-    summary = client.get(f"/api/v1/reports/payments/summary{url}", headers=treasury["headers"])
+    summary = client.get(f"/api/v1/reports/payments/summary{url}", headers=administrator["headers"])
     assert summary.status_code == 200, summary.text
     assert summary.json()["total_count"] == 1
     assert Decimal(str(summary.json()["total_amount"])) == Decimal("12.50")
     payments = client.get(f"/api/v1/reports/payments/details{url}&page=1&limit=1",
-                          headers=treasury["headers"])
+                          headers=administrator["headers"])
     assert payments.status_code == 200 and payments.json()["total"] == 1
     assert payments.json()["items"][0]["payment_id"] == registration["payment_id"]
     assert "payment_reference" not in payments.json()["items"][0]
-    assert "payments" not in client.get(f"/api/v1/reports/overview{url}", headers=reviewer["headers"]).json()
-    assert client.get("/api/v1/reports/payments/summary", headers=reviewer["headers"]).status_code == 403
+    assert "payments" not in client.get(f"/api/v1/reports/overview{url}", headers=event_manager["headers"]).json()
+    assert client.get("/api/v1/reports/payments/summary", headers=event_manager["headers"]).status_code == 403
     assert client.get("/api/v1/reports/overview", headers={"Authorization": f"Bearer {participant['access_token']}"}).status_code == 403
     assert registration["status"] == "PAYMENT_PENDING"
+
+
+def test_live_scoring_is_auditable_role_protected_and_idempotent(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    participant = _register(ctx, f"score_{uuid.uuid4().hex[:8]}")
+    registration = _create_registration(ctx, {
+        "Authorization": f"Bearer {participant['access_token']}"})
+    ctx["db"].execute(text("""
+        UPDATE dbo.Registrations SET StatusId=(SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='APPROVED')
+        WHERE RegistrationId=:id
+    """), {"id": registration["id"]})
+    ctx["db"].commit()
+
+    manager = _account(ctx, "EVENT_MANAGER")
+    changed = client.patch(f"/api/v1/events/{ctx['event_id']}/competition-status",
+                           headers=manager["headers"], json={"status": "SCHEDULED"})
+    assert changed.status_code == 200, changed.text
+    created_round = client.post(f"/api/v1/events/{ctx['event_id']}/rounds",
+                                 headers=manager["headers"], json={
+                                     "category_id": ctx["category_id"],
+                                     "round_number": 1, "name": "Ronda de prueba"})
+    assert created_round.status_code == 201, created_round.text
+    changed = client.patch(f"/api/v1/events/{ctx['event_id']}/competition-status",
+                           headers=manager["headers"], json={"status": "LIVE"})
+    assert changed.status_code == 200, changed.text
+
+    payload = {"category_id": ctx["category_id"], "team_id": registration["team_id"],
+               "round_id": created_round.json()["id"],
+               "points_delta": 5, "reason": "Punto de prueba"}
+    key = str(uuid.uuid4())
+    url = f"/api/v1/events/{ctx['event_id']}/scores"
+    forbidden = client.post(url, headers={"Authorization": f"Bearer {participant['access_token']}",
+                                           "Idempotency-Key": key}, json=payload)
+    assert forbidden.status_code == 403
+    scored = client.post(url, headers={**manager["headers"], "Idempotency-Key": key}, json=payload)
+    assert scored.status_code == 201, scored.text
+    assert scored.json()["total_points"] == 5
+    repeated = client.post(url, headers={**manager["headers"], "Idempotency-Key": key}, json=payload)
+    assert repeated.status_code == 201 and repeated.json()["replayed"] is True
+
+    correction = client.post(url, headers={**manager["headers"], "Idempotency-Key": str(uuid.uuid4())},
+                             json={**payload, "points_delta": -2, "reason": "Corrección justificada"})
+    assert correction.status_code == 201 and correction.json()["total_points"] == 3
+    board = client.get(f"/api/v1/events/{ctx['event_id']}/leaderboard?category_id={ctx['category_id']}")
+    assert board.status_code == 200 and board.json()["items"][0]["points"] == 3
+    history = client.get(f"/api/v1/events/{ctx['event_id']}/scores/history?category_id={ctx['category_id']}")
+    assert history.status_code == 200 and history.json()["total"] == 2
+    assert "created_by" not in history.json()["items"][0]
+    status_history = client.get(f"/api/v1/events/{ctx['event_id']}/competition-status/history")
+    assert status_history.status_code == 200 and status_history.json()["total"] == 2
+    public_audit_denied = client.get(
+        f"/api/v1/events/{ctx['event_id']}/scores/audit?category_id={ctx['category_id']}",
+        headers={"Authorization": f"Bearer {participant['access_token']}"})
+    assert public_audit_denied.status_code == 403
+    staff_audit = client.get(
+        f"/api/v1/events/{ctx['event_id']}/scores/audit?category_id={ctx['category_id']}",
+        headers=manager["headers"])
+    assert staff_audit.status_code == 200 and staff_audit.json()["items"][0]["actor_user_id"] == manager["user_id"]
+    assert client.post(url, headers={**manager["headers"], "Idempotency-Key": str(uuid.uuid4())},
+                       json={**payload, "points_delta": -100}).status_code == 422
 
 
 def test_registration_rolls_back_every_row_when_payment_insert_fails(sql_api, monkeypatch):

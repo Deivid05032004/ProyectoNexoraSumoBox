@@ -15,8 +15,8 @@ router = APIRouter(prefix="/api/v1", tags=["Recursos"])
 @router.get("/teams")
 def list_teams(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
               user=Depends(get_current_user), db: Session = Depends(get_db)):
-    where = "" if user["role"] in ("ADMIN", "REVIEWER") else "WHERE t.OwnerUserId=:owner"
-    contact_phone = "t.ContactPhone" if user["role"] != "REVIEWER" else "CAST(NULL AS NVARCHAR(128))"
+    where = "" if user["role"] in ("ADMIN", "EVENT_MANAGER") else "WHERE t.OwnerUserId=:owner"
+    contact_phone = "t.ContactPhone" if user["role"] != "EVENT_MANAGER" else "CAST(NULL AS NVARCHAR(128))"
     total = db.execute(text(f"SELECT COUNT_BIG(*) FROM dbo.Teams t {where}"),
                        {"owner": user["user_id"]}).scalar_one()
     rows = db.execute(text(f"""
@@ -50,13 +50,13 @@ def _decode_participant(row):
 
 @router.get("/teams/{team_id}")
 def get_team(team_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
-    contact_phone = "ContactPhone" if user["role"] != "REVIEWER" else "CAST(NULL AS NVARCHAR(128))"
+    contact_phone = "ContactPhone" if user["role"] != "EVENT_MANAGER" else "CAST(NULL AS NVARCHAR(128))"
     row = db.execute(text(f"""
         SELECT TeamId AS id, Name AS name, InstitutionId AS institution_id,
                {contact_phone} AS contact_phone, OwnerUserId AS owner_user_id
         FROM dbo.Teams WHERE TeamId=:id
           AND (:admin=1 OR OwnerUserId=:owner)
-    """), {"id": team_id, "admin": user["role"] in ("ADMIN", "REVIEWER"),
+    """), {"id": team_id, "admin": user["role"] in ("ADMIN", "EVENT_MANAGER"),
           "owner": user["user_id"]}).mappings().first()
     if row is None:
         raise HTTPException(status_code=404, detail="Equipo no encontrado.")
@@ -121,7 +121,7 @@ def update_team(team_id: int, payload: TeamUpdate, user=Depends(require_roles("P
 @router.get("/robots")
 def list_robots(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
                 user=Depends(get_current_user), db: Session = Depends(get_db)):
-    where = "" if user["role"] in ("ADMIN", "REVIEWER") else "WHERE OwnerUserId=:owner"
+    where = "" if user["role"] in ("ADMIN", "EVENT_MANAGER") else "WHERE OwnerUserId=:owner"
     total = db.execute(text(f"SELECT COUNT_BIG(*) FROM dbo.Robots {where}"),
                        {"owner": user["user_id"]}).scalar_one()
     rows = db.execute(text(f"""
@@ -139,7 +139,7 @@ def get_robot(robot_id: int, user=Depends(get_current_user), db: Session = Depen
         SELECT RobotId AS id, Name AS name, RobotDescription AS description,
                OwnerUserId AS owner_user_id FROM dbo.Robots
         WHERE RobotId=:id AND (:admin=1 OR OwnerUserId=:owner)
-    """), {"id": robot_id, "admin": user["role"] in ("ADMIN", "REVIEWER"),
+    """), {"id": robot_id, "admin": user["role"] in ("ADMIN", "EVENT_MANAGER"),
           "owner": user["user_id"]}).mappings().first()
     if row is None:
         raise HTTPException(status_code=404, detail="Robot no encontrado.")
@@ -211,7 +211,7 @@ def update_own_participant(payload: ParticipantUpdate,
 
 @router.get("/participants")
 def list_participants(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
-                      user=Depends(require_roles("ADMIN", "REVIEWER")),
+                      user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
                       db: Session = Depends(get_db)):
     mobile_phone = "MobilePhone" if user["role"] == "ADMIN" else "CAST(NULL AS NVARCHAR(128))"
     total = db.execute(text("SELECT COUNT_BIG(*) FROM dbo.Participants")).scalar_one()

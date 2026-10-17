@@ -24,7 +24,7 @@ credenciales.
 
 ## Auth y permisos
 
-Registro público requiere correo validado y asigna `PARTICIPANT`; nunca acepta el rol enviado por cliente. El login usa el correo. Se valida el formato y la disponibilidad DNS del dominio, pero esto no confirma que el usuario controle el buzón. Las contraseñas requieren al menos 15 caracteres y se almacenan con Argon2id; bcrypt solo se conserva para verificar hashes antiguos. Los JWT usan HS256 y expiran en 30 minutos por defecto. No hay refresh token. Los roles privilegiados son `ADMIN`, `REVIEWER` y `TREASURY`; la migración crea cuentas demo locales automáticamente y las cuentas reales se aprovisionan por operador.
+Registro público requiere correo validado y asigna `PARTICIPANT`; nunca acepta el rol enviado por cliente. El login usa el correo. Se valida el formato y la disponibilidad DNS del dominio, pero esto no confirma que el usuario controle el buzón. Las contraseñas requieren al menos 15 caracteres y se almacenan con Argon2id; bcrypt solo se conserva para verificar hashes antiguos. Los JWT usan HS256 y expiran en 30 minutos por defecto. No hay refresh token. Los roles del sistema son `ADMIN`, `EVENT_MANAGER` y `PARTICIPANT`; la migración crea cuentas demo locales automáticamente y las cuentas reales se aprovisionan por operador.
 
 También existe `POST /api/v1/auth/google` para inicio/registro con un ID token
 verificado de Google y `POST /api/v1/auth/google/link` para vincular una cuenta
@@ -43,12 +43,50 @@ en texto plano y no crea usuarios predeterminados.
 ## Operación
 
 - `ADMIN`: administra catálogos, usuarios y roles; puede revisar pagos e
-  inscripciones.
-- `REVIEWER`: puede revisar inscripciones pendientes y observadas. La base no
-  tiene asignación por revisor, así que todos los revisores ven la cola común.
-- `TREASURY`: ve los pagos y comprobantes pendientes de tesorería.
+  inscripciones y acceder a reportes financieros.
+- `EVENT_MANAGER`: gestiona el flujo operativo, rondas, enfrentamientos,
+  estados de competencia, puntuaciones y reportes operativos. No puede revisar
+  pagos ni descargar comprobantes.
 - `PARTICIPANT`: crea equipos/robots propios, inscripciones, presenta pagos y
-  consulta exclusivamente sus recursos.
+  consulta exclusivamente sus datos privados; resultados publicados son públicos.
+
+La migración 10 reasigna las cuentas antiguas `REVIEWER` a `EVENT_MANAGER` y
+`TREASURY` a `ADMIN`; la migración 12 actualiza referencias de auditoría y
+elimina roles obsoletos conservando los registros. Revise las cuentas `TREASURY`
+antes de desplegar, porque el modelo nuevo limita las operaciones financieras
+a `ADMIN`.
+
+## Competencias y puntuación en vivo
+
+La migración 10 agrega ciclo de vida `DRAFT → SCHEDULED → LIVE ↔ PAUSED →
+FINISHED` con cancelación en preparación/ejecución, rondas, enfrentamientos y
+movimientos append-only de puntos. La migración 11 agrega auditoría del estado
+con usuario, fecha y motivo; la 12 finaliza la migración de roles. Son aditivas;
+no eliminan registros operativos.
+
+`PATCH /api/v1/events/{id}/competition-status` admite cambios de estado por
+`ADMIN` y `EVENT_MANAGER`; cada transición queda en el historial. El personal
+puede crear rondas (`POST /api/v1/events/{id}/rounds`) y enfrentamientos
+(`POST /api/v1/events/{id}/matches`). Para puntuar, la competencia debe estar
+`LIVE` y el equipo debe tener una inscripción `APPROVED` en el evento y
+categoría correctos. `POST /api/v1/events/{id}/scores` agrega un movimiento
+positivo o un ajuste negativo con motivo; se exige el header UUID
+`Idempotency-Key` para que reintentos no dupliquen puntos. Nunca se sobrescriben
+los movimientos previos y el total no puede ser negativo. No se impone un
+reglamento deportivo: los empates se conservan con el mismo puesto.
+
+Resultados, clasificación e historial público se consultan con
+`GET /api/v1/events/{id}/leaderboard` y
+`GET /api/v1/events/{id}/scores/history`. Las listas son paginadas desde SQL.
+La bitácora completa de autoría para el personal se consulta con
+`GET /api/v1/events/{id}/scores/audit`; el historial público no revela la
+identidad interna del operador.
+El WebSocket `ws://127.0.0.1:8000/api/v1/events/{id}/live` envía una instantánea
+inicial y detecta cambios mediante consulta periódica cada dos segundos; emite
+solo estado y clasificación, sin datos personales o financieros. El sondeo
+funciona con una instancia de API y SQL Server persistente; varias instancias
+pueden consultar la misma base, aunque el intervalo de actualización es de dos
+segundos.
 
 Una inscripción se identifica de forma única por evento, categoría, equipo y
 robot. Un equipo puede tener varios robots y participar en más de una categoría
@@ -57,7 +95,7 @@ inscripción tiene un único pago, que puede recibir varios comprobantes durante
 reenvíos tras rechazo; el historial del archivo anterior se conserva.
 
 El flujo es `PAYMENT_PENDING` → `PAYMENT_REVIEW` → (pago `PAID`) `PENDING` →
-`APPROVED`, `OBSERVED` o `REJECTED`. Si tesorería rechaza un pago, vuelve a
+`APPROVED`, `OBSERVED` o `REJECTED`. Si ADMIN rechaza un pago, vuelve a
 `PAYMENT_PENDING`. Cada cambio se guarda en `StatusHistory`.
 
 ## Comprobantes
@@ -79,8 +117,8 @@ tablas de operación; la tendencia acepta `from_date` y `to_date` en formato
 ISO. `/payments/summary` muestra recuentos e importes agrupados por estado.
 `/registrations/details` y `/payments/details` entregan filas operativas
 paginadas, con conteo total en la respuesta y sin incluir datos de contacto ni
-referencias bancarias. `ADMIN` consulta todos; `REVIEWER` ve datos de
-inscripción y `TREASURY` datos financieros. Las listas aplican paginación SQL
+referencias bancarias. `ADMIN` consulta todos; `EVENT_MANAGER` ve datos de
+inscripción y `ADMIN` datos financieros. Las listas aplican paginación SQL
 con `page` y `limit` (máximo 100), y devuelven `X-Total-Count`, `X-Page`,
 `X-Page-Size` y `X-Total-Pages`; los resúmenes se agregan en SQL antes de
 responder.
@@ -114,7 +152,7 @@ con contraseñas se elimina al terminar. Si las cuentas ya existen, no se pueden
 al crearlas y nunca se guardan en SQL o en los scripts. No hay cuentas
 privilegiadas con contraseñas por defecto compartidas.
 
-Las migraciones 06 a 09 fueron aplicadas en la instancia local. Se preservaron las cuentas y se cifraron sus datos personales; las filas históricas sin propietario no se exponen a participantes. Las migraciones son aditivas y no eliminan datos operativos. La migración 06 cifra con AES-GCM correos, nombres, teléfonos, texto libre y referencias de pago existentes; la 07 finaliza la identidad por email cifrado y HMAC; la 08 añade índices de paginación; la 09 añade identidad externa Google. SQL Server Express no ofrece TDE, por lo que el cifrado de aplicación no cifra páginas, log ni backups completos. Protege el volumen y los backups con cifrado del sistema/almacenamiento o usa una edición con TDE. Los datos públicos y los importes necesarios para los reportes siguen consultables.
+Las migraciones 06 a 12 se aplicaron en la instancia local. Se preservaron las cuentas y se cifraron sus datos personales; las filas históricas sin propietario no se exponen a participantes. Las migraciones son aditivas y no eliminan datos operativos. SQL Server Express no ofrece TDE, por lo que el cifrado de aplicación no cifra páginas, log ni backups completos. Protege el volumen y los backups con cifrado del sistema/almacenamiento o usa una edición con TDE.
 
 ## Pruebas
 

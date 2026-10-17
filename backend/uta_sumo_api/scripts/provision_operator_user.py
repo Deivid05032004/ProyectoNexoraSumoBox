@@ -15,8 +15,8 @@ def main() -> None:
     email = input("Correo electrónico: ").strip()
     first_name = input("Nombre: ").strip()
     last_name = input("Apellido: ").strip()
-    role = input("Rol (ADMIN/REVIEWER/TREASURY): ").strip().upper()
-    if role not in {"ADMIN", "REVIEWER", "TREASURY"}:
+    role = input("Rol (ADMIN/EVENT_MANAGER): ").strip().upper()
+    if role not in {"ADMIN", "EVENT_MANAGER"}:
         raise SystemExit("Rol no permitido por este aprovisionador.")
     password = getpass("Contraseña inicial (15 caracteres mínimo): ")
     confirm = getpass("Confirma la contraseña: ")
