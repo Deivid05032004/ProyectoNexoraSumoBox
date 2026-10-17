@@ -58,6 +58,10 @@ IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'REVIEWER')
 IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'TREASURY')
     INSERT INTO dbo.Roles (Code, Name)
     VALUES ('TREASURY', N'Tesorería');
+
+IF NOT EXISTS (SELECT 1 FROM dbo.Roles WHERE Code = 'PARTICIPANT')
+    INSERT INTO dbo.Roles (Code, Name)
+    VALUES ('PARTICIPANT', N'Participante');
 GO
 
 -- Verificación

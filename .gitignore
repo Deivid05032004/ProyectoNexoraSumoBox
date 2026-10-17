@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+backend/uta_sumo_api/.env
 
 # Python
 __pycache__/
@@ -9,6 +10,8 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+backend/uta_sumo_api/storage/
+backend/uta_sumo_api/postman/*private*.json
 
 # Node.js y React
 node_modules/

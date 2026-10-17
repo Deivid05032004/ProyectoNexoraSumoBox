@@ -1,0 +1,6 @@
+/* Ejecutar conectado a master en SQL Server. */
+IF DB_ID(N'UTA_SUMO_ROBOTICS_CUP') IS NULL
+BEGIN
+    CREATE DATABASE UTA_SUMO_ROBOTICS_CUP;
+END;
+GO

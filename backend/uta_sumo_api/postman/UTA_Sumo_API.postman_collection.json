@@ -1,0 +1,1332 @@
+{
+  "info": {
+    "name": "UTA SUMO ROBOTICS CUP API (implementado)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Colección completa: health, autenticación, catálogos, recursos, inscripciones, pagos, administración y reportes."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health API",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/health/live"
+      }
+    },
+    {
+      "name": "Health SQL Server",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/health"
+      }
+    },
+    {
+      "name": "Categorías",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/categories"
+      }
+    },
+    {
+      "name": "Instituciones",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/institutions"
+      }
+    },
+    {
+      "name": "Eventos",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/events"
+      }
+    },
+    {
+      "name": "Tarifas vigentes",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/tariffs?event_id={{eventId}}&category_id={{categoryId}}"
+      }
+    },
+    {
+      "name": "Registrar participante",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/v1/auth/register",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{participantEmail}}\",\n  \"password\": \"{{participantPassword}}\",\n  \"first_name\": \"Nombre\",\n  \"last_name\": \"Apellido\",\n  \"institution_id\": {{institutionId}},\n  \"mobile_phone\": \"0990000000\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Registro por email creado', function () { pm.response.to.have.status(201); });",
+              "if (pm.response.code === 201) { pm.environment.set('token', pm.response.json().access_token); pm.environment.set('participantUsername', pm.response.json().user.email); pm.environment.set('userId', pm.response.json().user.user_id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Login",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/v1/auth/login",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{participantUsername}}\",\n  \"password\": \"{{participantPassword}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Login por email correcto', function () { pm.response.to.have.status(200); });",
+              "if(pm.response.code===200)pm.environment.set('token',pm.response.json().access_token);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Iniciar sesión o registrar con Google",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id_token\": \"{{googleIdToken}}\",\n  \"institution_id\": {{institutionId}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/api/v1/auth/google",
+        "description": "Usa un ID token vigente emitido para el mismo GOOGLE_CLIENT_ID configurado en el backend.",
+        "auth": {
+          "type": "noauth"
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Google auth responde 200\", function () { pm.response.to.have.status(200); });",
+              "if (pm.response.code === 200) { const r = pm.response.json(); pm.environment.set(\"token\", r.access_token); pm.environment.set(\"userId\", r.user.user_id); pm.environment.set(\"participantEmail\", r.user.email); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Vincular Google a mi cuenta autenticada",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"id_token\": \"{{googleIdToken}}\",\n  \"institution_id\": {{institutionId}}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": "{{baseUrl}}/api/v1/auth/google/link",
+        "description": "Usa un ID token vigente emitido para el mismo GOOGLE_CLIENT_ID configurado en el backend.",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{token}}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Vinculación Google responde 204\", function () { pm.response.to.have.status(204); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Usuario autenticado",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/api/v1/auth/me",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{token}}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Administración (token adminToken)",
+      "item": [
+        {
+          "name": "Roles",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/roles",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Usuarios",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/users?page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Actualizar usuario y rol",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/admin/users/{{userId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"is_active\": true,\n  \"role\": \"REVIEWER\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Dashboard",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/dashboard",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crear categoría",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/categories",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"MINI SUMO DEMO\",\n  \"description\": \"Ejemplo\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===201)pm.environment.set('categoryId',pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Actualizar categoría",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/api/v1/categories/{{categoryId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"MINI SUMO DEMO EDITADA\",\n  \"description\": \"Ejemplo actualizado\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Estado de categoría",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/categories/{{categoryId}}/status?is_active=true",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crear institución",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/institutions",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Institución de prueba\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===201)pm.environment.set('institutionId',pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Actualizar institución",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/api/v1/institutions/{{institutionId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Institución de prueba actualizada\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Desactivar institución",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/institutions/{{institutionId}}/status?is_active=false",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crear evento",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/events",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"UTA SUMO\",\n  \"edition_year\": 2026,\n  \"registration_start\": \"2026-01-01\",\n  \"registration_end\": \"2026-12-31\",\n  \"is_active\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===201)pm.environment.set('eventId',pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Actualizar evento",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"UTA SUMO\",\n  \"edition_year\": 2026,\n  \"registration_start\": \"2026-01-01\",\n  \"registration_end\": \"2026-12-31\",\n  \"is_active\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "Crear tarifa",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/tariffs",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{eventId}}\",\n  \"category_id\": \"{{categoryId}}\",\n  \"amount\": \"10.00\",\n  \"valid_from\": \"2026-01-01\",\n  \"valid_until\": \"2026-12-31\",\n  \"is_active\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===201)pm.environment.set('tariffId',pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Actualizar tarifa",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/api/v1/tariffs/{{tariffId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{eventId}}\",\n  \"category_id\": \"{{categoryId}}\",\n  \"amount\": \"10.00\",\n  \"valid_from\": \"2026-01-01\",\n  \"valid_until\": \"2026-12-31\",\n  \"is_active\": true\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Recursos propios",
+      "item": [
+        {
+          "name": "Mi perfil de participante",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/participants/me",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===200)pm.environment.set('participantId',pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Actualizar mi perfil",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/api/v1/participants/me",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Nombre\",\n  \"last_name\": \"Apellido\",\n  \"mobile_phone\": \"0990000000\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Crear equipo",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/teams",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Equipo demo\",\n  \"institution_id\": \"{{institutionId}}\",\n  \"contact_phone\": \"0990000000\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===201)pm.environment.set('teamId',pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consultar mis equipos",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/teams?page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Crear robot",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/robots",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Robot demo\",\n  \"robot_description\": \"Robot de prueba\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===201)pm.environment.set('robotId',pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consultar mis robots",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/robots?page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Inscripciones y pagos",
+      "item": [
+        {
+          "name": "Crear inscripción",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/registrations",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{eventId}}\",\n  \"category_id\": \"{{categoryId}}\",\n  \"team_id\": \"{{teamId}}\",\n  \"robot_id\": \"{{robotId}}\",\n  \"participants\": [\n    {\n      \"participant_id\": \"{{participantId}}\",\n      \"role\": \"PARTICIPANT\"\n    }\n  ],\n  \"notes\": \"Inscripción desde Postman\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===201){pm.environment.set('registrationId',pm.response.json().id);pm.environment.set('paymentId',pm.response.json().payment_id);pm.environment.set('registrationCode',pm.response.json().code);}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mis inscripciones",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/registrations?page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inscripción por código",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/registrations/code/{{registrationCode}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Historial de inscripción",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/registrations/{{registrationId}}/history",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Actualizar notas de inscripción",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/v1/registrations/{{registrationId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Información adicional\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Pagos propios",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/payments",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Pago propio",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/payments/{{paymentId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Subir comprobante",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/payments/{{paymentId}}/receipt",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": ""
+                },
+                {
+                  "key": "payment_reference",
+                  "type": "text",
+                  "value": "referencia-demo"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Descargar comprobante",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/payments/{{paymentId}}/receipt",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Pagos en revisión",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/payments?status=IN_REVIEW&page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{treasuryToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Revisar pago",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/payments/{{paymentId}}/review",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{treasuryToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"PAID\",\n  \"comments\": \"Comprobante revisado\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Revisar inscripción",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/registrations/{{registrationId}}/review",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"APPROVED\",\n  \"comments\": \"Datos verificados\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Cancelar inscripción",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/registrations/{{registrationId}}/cancel",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Login ADMIN (credenciales del operador)",
+      "item": [
+        {
+          "name": "Obtener token ADMIN",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{adminUsername}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===200)pm.environment.set('adminToken',pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Login REVIEWER (credenciales del operador)",
+      "item": [
+        {
+          "name": "Obtener token REVIEWER",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{reviewerUsername}}\",\n  \"password\": \"{{reviewerPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===200)pm.environment.set('reviewerToken',pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Login TREASURY (credenciales del operador)",
+      "item": [
+        {
+          "name": "Obtener token TREASURY",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/auth/login",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{treasuryUsername}}\",\n  \"password\": \"{{treasuryPassword}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if(pm.response.code===200)pm.environment.set('treasuryToken',pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Reportes",
+      "description": "Agregados por evento. ADMIN consulta todos; REVIEWER reportes deportivos; TREASURY resumen financiero.",
+      "item": [
+        {
+          "name": "Resumen ejecutivo",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports/overview?event_id={{eventId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Reporte disponible\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Respuesta JSON\", function () { pm.response.to.be.json; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Inscripciones por estado",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports/registrations/by-status?event_id={{eventId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Reporte disponible\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Respuesta JSON\", function () { pm.response.to.be.json; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Inscripciones por categoría",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports/registrations/by-category?event_id={{eventId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Reporte disponible\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Respuesta JSON\", function () { pm.response.to.be.json; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Tendencia mensual",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports/registrations/trend?event_id={{eventId}}&from_date={{fromDate}}&to_date={{toDate}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Reporte disponible\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Respuesta JSON\", function () { pm.response.to.be.json; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Resumen financiero por estado",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports/payments/summary?event_id={{eventId}}",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{treasuryToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Reporte disponible\", function () { pm.response.to.have.status(200); });",
+                  "pm.test(\"Respuesta JSON\", function () { pm.response.to.be.json; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Detalle paginado de inscripciones",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports/registrations/details?event_id={{eventId}}&page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{reviewerToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Detalle paginado de pagos",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/reports/payments/details?event_id={{eventId}}&page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{treasuryToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
