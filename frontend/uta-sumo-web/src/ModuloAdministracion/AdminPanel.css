@@ -1,0 +1,84 @@
+.admin-panel {
+  min-height: calc(100vh - 4.5rem);
+  padding: 3rem clamp(1.25rem, 5vw, 4rem);
+  background: #0b0d11;
+  color: #fff;
+  box-sizing: border-box;
+}
+
+.admin-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  max-width: 1000px;
+  margin: 0 auto 1.5rem;
+}
+
+.admin-panel-header h1,
+.admin-panel-card h1 {
+  margin: 0;
+  color: #fff;
+}
+
+.admin-panel-header p:not(.admin-panel-eyebrow) {
+  margin: 0.5rem 0 0;
+  color: #aeb8c7;
+}
+
+.admin-panel-eyebrow {
+  margin: 0 0 0.45rem;
+  color: #9aafff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.admin-stats article,
+.admin-panel-card {
+  padding: 1.4rem;
+  border: 1px solid #262c36;
+  border-radius: 12px;
+  background: #161a22;
+}
+
+.admin-stats span {
+  color: #aeb8c7;
+  font-size: 0.9rem;
+}
+
+.admin-stats strong {
+  display: block;
+  margin-top: 0.45rem;
+  font-size: 2rem;
+}
+
+.admin-panel-card {
+  max-width: 560px;
+  margin: 4rem auto;
+}
+
+.admin-panel-error { color: #ffd6d6; }
+
+.admin-logout,
+.admin-panel-card button {
+  padding: 0.65rem 1rem;
+  border: 1px solid #4a5667;
+  border-radius: 8px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .admin-panel-header { flex-direction: column; }
+  .admin-stats { grid-template-columns: 1fr; }
+}
