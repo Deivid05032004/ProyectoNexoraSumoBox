@@ -87,6 +87,20 @@ body {
   color: var(--text-main);
 }
 
+.nav-logout {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.nav-logout:hover {
+  color: var(--text-main);
+}
+
 .btn-panel {
   background-color: #1c212c;
   color: var(--text-main);
@@ -509,7 +523,8 @@ body {
   font-weight: 600;
 }
 
-.registration-card input {
+.registration-card input,
+.registration-card select {
   padding: 10px 12px;
   border: 1px solid var(--registration-line);
   border-radius: 8px;
@@ -517,7 +532,8 @@ body {
   color: var(--registration-ink);
 }
 
-.registration-card input:focus {
+.registration-card input:focus,
+.registration-card select:focus {
   outline: 3px solid color-mix(in srgb, var(--registration-accent) 35%, transparent);
   outline-offset: 1px;
   border-color: var(--registration-accent);
@@ -538,6 +554,14 @@ body {
   font-family: Archivo, "Arial Black", "Segoe UI", sans-serif;
   font-size: 22px;
   font-weight: 800;
+}
+
+.registration-contract-note {
+  margin-top: 8px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--registration-warn);
+  background: var(--registration-warn-bg);
+  color: var(--registration-warn) !important;
 }
 
 .member-fields {
@@ -601,9 +625,41 @@ body {
   color: var(--registration-muted);
 }
 
+.confirmation-card h1,
 .confirmation-card h2,
 .confirmation-card p {
   color: var(--registration-ink);
+}
+
+.confirmation-summary {
+  margin: 20px 0;
+  padding: 14px 16px;
+  border: 1px solid var(--registration-line);
+  border-radius: 10px;
+  background: var(--registration-bg);
+}
+
+.confirmation-summary p + p {
+  margin-top: 7px;
+}
+
+.receipt-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.receipt-help {
+  margin: -6px 0 0;
+  color: var(--registration-muted) !important;
+  font-size: 13px;
+}
+
+.registration-link {
+  display: inline-block;
+  margin-top: 20px;
+  text-decoration: none;
+  text-align: center;
 }
 
 @media (max-width: 720px) {
