@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from 'react';
 import {
   obtenerResultadosTorneo,
   EVENTO_RESULTADOS_ACTUALIZADOS,
+  suscribirBroadcastChannel,
+  iniciarPolling,
 } from './services/resultadosApi';
 import './Resultados.css';
 
@@ -59,57 +61,102 @@ export default function Resultados() {
     return `${min.toString().padStart(2, '0')}:${seg.toString().padStart(2, '0')}`;
   };
 
-  // Carga y suscripción a eventos en tiempo real
+  // ─── SINCRONIZACIÓN EN TIEMPO REAL (3 capas) ──────────────────────────────
   useEffect(() => {
     let activo = true;
 
-    async function cargar() {
+    /**
+     * Función central que procesa los nuevos datos del combate y dispara
+     * las animaciones correspondientes (inicio de combate, declaración ganador).
+     */
+    function procesarDatosCombate(res) {
+      if (!activo) return;
+
+      setCombate(res);
+      setCargando(false);
+
+      // Animación de espadas al iniciar el combate
+      if (res.estado === 'En combate' && ultimoEstadoRef.current !== 'En combate') {
+        activarAnimacionEspadas();
+        setCronometroCorriendo(true);
+      } else if (res.estado !== 'En combate') {
+        setCronometroCorriendo(false);
+      }
+      ultimoEstadoRef.current = res.estado;
+
+      // Animación de victoria cuando se declara un ganador
+      if (
+        res.ganador &&
+        res.ganador !== 'No definido' &&
+        res.ganador !== 'Empate' &&
+        res.estado === 'Finalizado' &&
+        res.ganador !== ultimoGanadorRef.current
+      ) {
+        ultimoGanadorRef.current = res.ganador;
+        activarCelebracionGanador(res.ganador);
+      }
+    }
+
+    // CAPA 0: Carga inicial de datos
+    async function cargarInicial() {
       try {
         const res = await obtenerResultadosTorneo();
-        if (activo) {
-          setCombate(res);
-          setCargando(false);
-
-          // Detección de inicio de combate para animación de espadas
-          if (res.estado === 'En combate' && ultimoEstadoRef.current !== 'En combate') {
-            activarAnimacionEspadas();
-            setCronometroCorriendo(true);
-          } else if (res.estado !== 'En combate') {
-            setCronometroCorriendo(false);
-          }
-          ultimoEstadoRef.current = res.estado;
-
-          // Detección de declaración de ganador en tiempo real para animación de victoria
-          if (
-            res.ganador &&
-            res.ganador !== 'No definido' &&
-            res.ganador !== 'Empate' &&
-            res.estado === 'Finalizado' &&
-            res.ganador !== ultimoGanadorRef.current
-          ) {
-            ultimoGanadorRef.current = res.ganador;
-            activarCelebracionGanador(res.ganador);
-          }
-        }
+        procesarDatosCombate(res);
       } catch (err) {
         console.error('Error al cargar combate en vivo:', err);
         if (activo) setCargando(false);
       }
     }
 
-    cargar();
+    cargarInicial();
 
-    const handleActualizacion = () => {
-      cargar();
+    // CAPA 1: BroadcastChannel — actualización instantánea entre pestañas del mismo
+    // dispositivo (admin en una pestaña, pantalla gigante en otra → < 10ms).
+    const { destroy: destroyBroadcast } = suscribirBroadcastChannel((datos) => {
+      procesarDatosCombate(datos);
+    });
+
+    // CAPA 2: Evento DOM — misma pestaña (disparado por guardarResultadosTorneo).
+    const handleEventoDom = (evento) => {
+      // CustomEvent con detail lleva los datos ya cargados; evita una nueva lectura de localStorage.
+      if (evento.detail) {
+        procesarDatosCombate(evento.detail);
+      } else {
+        // Compatibilidad con Event básico (versiones anteriores)
+        obtenerResultadosTorneo().then(procesarDatosCombate).catch(() => {});
+      }
     };
 
-    window.addEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleActualizacion);
-    window.addEventListener('storage', handleActualizacion);
+    window.addEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleEventoDom);
+
+    // CAPA 3: Evento 'storage' del navegador — detecta cambios en localStorage
+    // hechos desde otra pestaña en navegadores que no soporten BroadcastChannel.
+    const handleStorage = (e) => {
+      if (e.key === 'uta.torneo.resultados' && e.newValue) {
+        try {
+          const datos = JSON.parse(e.newValue);
+          if (datos.robotA && datos.robotB) {
+            procesarDatosCombate(datos);
+          }
+        } catch { /* parseo fallido, lo ignora */ }
+      }
+    };
+
+    window.addEventListener('storage', handleStorage);
+
+    // CAPA 4: Polling inteligente — sincroniza entre DISPOSITIVOS distintos
+    // (admin en laptop, pantalla gigante en TV conectada a otro PC/tablet).
+    // Intervalo: 2 s cuando visible, 8 s cuando en background.
+    const { stop: stopPolling } = iniciarPolling((datos) => {
+      procesarDatosCombate(datos);
+    });
 
     return () => {
       activo = false;
-      window.removeEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleActualizacion);
-      window.removeEventListener('storage', handleActualizacion);
+      destroyBroadcast();
+      window.removeEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleEventoDom);
+      window.removeEventListener('storage', handleStorage);
+      stopPolling();
     };
   }, []);
 
