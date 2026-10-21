@@ -133,17 +133,21 @@ def payment_summary(
 ):
     _event_exists(db, event_id)
     rows = db.execute(text("""
-        SELECT p.PaymentStatus AS status, COUNT_BIG(*) AS count,
+        SELECT p.PaymentStatus AS status,p.CurrencyCode AS currency,COUNT_BIG(*) AS count,
           SUM(p.Amount) AS amount
         FROM dbo.Payments p JOIN dbo.Registrations r ON r.RegistrationId=p.RegistrationId
         WHERE (:event_id IS NULL OR r.EventId=:event_id)
-        GROUP BY p.PaymentStatus ORDER BY p.PaymentStatus
+        GROUP BY p.PaymentStatus,p.CurrencyCode ORDER BY p.PaymentStatus,p.CurrencyCode
     """), {"event_id": event_id}).mappings().all()
-    items = [{"status": row["status"], "count": int(row["count"]), "amount": row["amount"] or 0}
+    items = [{"status": row["status"], "currency": row["currency"], "count": int(row["count"]), "amount": row["amount"] or 0}
              for row in rows]
+    currencies = {item["currency"] for item in items}
     return {"event_id": event_id, "items": items,
             "total_count": sum(item["count"] for item in items),
-            "total_amount": sum((item["amount"] for item in items), start=0)}
+            # Kept for older clients; null when adding different currencies would be misleading.
+            "total_amount": sum((item["amount"] for item in items), start=0) if len(currencies) <= 1 else None,
+            "totals_by_currency": {currency: sum((item["amount"] for item in items if item["currency"] == currency), start=0)
+                                   for currency in sorted(currencies)}}
 
 
 @router.get("/registrations/details")
@@ -221,7 +225,7 @@ def payment_details(
     """), params).scalar_one())
     rows = db.execute(text(f"""
         SELECT p.PaymentId AS payment_id,p.RegistrationId AS registration_id,
-          r.EventId AS event_id,p.Amount AS amount,p.PaymentStatus AS status,
+          r.EventId AS event_id,p.Amount AS amount,p.CurrencyCode AS currency,p.PaymentStatus AS status,
           p.CreatedAt AS created_at,p.VerifiedAt AS verified_at
         FROM dbo.Payments p JOIN dbo.Registrations r ON r.RegistrationId=p.RegistrationId
         {where}

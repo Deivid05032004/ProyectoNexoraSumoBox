@@ -179,6 +179,71 @@ def test_registration_login_owner_isolation_and_duplicate_policy(sql_api):
     assert client.get("/api/v1/auth/me", headers={"Authorization": "Bearer invalid"}).status_code == 401
 
 
+def test_three_member_roster_orders_and_mine_queries_persist_without_adding_owner(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    participant = _register(ctx, f"roster_{uuid.uuid4().hex[:8]}")
+    token = {"Authorization": f"Bearer {participant['access_token']}"}
+    own_profile, team, robot = _owned_resources(ctx, token)
+    payload = {
+        "event_id": ctx["event_id"], "category_id": ctx["category_id"],
+        "team_id": team["id"], "robot_id": robot["id"],
+        "participants": [
+            {"role": "PARTICIPANT", "first_name": "Elena", "last_name": "Primera",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991000001"},
+            {"role": "PARTICIPANT", "first_name": "Mateo", "last_name": "Segundo",
+             "institution_id": ctx["institution_id"], "mobile_phone": None},
+            {"role": "COACH", "first_name": "Sofía", "last_name": "Coach",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991000003"},
+        ],
+    }
+
+    created = client.post("/api/v1/registrations", headers=token, json=payload)
+    assert created.status_code == 201, created.text
+    detail = created.json()
+    assert "created_by_user_id" not in detail
+    assert [person["slot"] for person in detail["participants"]] == [
+        "PARTICIPANT_1", "PARTICIPANT_2", "COACH"]
+    assert [person["role"] for person in detail["participants"]] == [
+        "PARTICIPANT", "PARTICIPANT", "COACH"]
+    assert own_profile["id"] not in {person["id"] for person in detail["participants"]}
+    assert [person["first_name"] for person in detail["participants"]] == [
+        "Elena", "Mateo", "Sofía"]
+    persisted_members = ctx["db"].execute(text("""
+        SELECT p.UserId, p.FirstName, rp.RegistrationPosition
+        FROM dbo.RegistrationParticipants rp
+        JOIN dbo.Participants p ON p.ParticipantId=rp.ParticipantId
+        WHERE rp.RegistrationId=:id ORDER BY rp.RegistrationPosition
+    """), {"id": detail["id"]}).all()
+    assert [row[0] for row in persisted_members] == [None, None, None]
+    assert [row[2] for row in persisted_members] == [1, 2, 3]
+    assert all(row[1].startswith("enc:v1:") for row in persisted_members)
+
+    mine = client.get("/api/v1/registrations/my?page=1&limit=10", headers=token)
+    assert mine.status_code == 200 and mine.headers["x-total-count"] == "1"
+    assert mine.json()[0]["id"] == detail["id"]
+    assert mine.json()[0]["payment_id"] == detail["payment_id"]
+    assert mine.json()[0]["amount"] == detail["amount"]
+    assert len(mine.json()[0]["participants"]) == 3
+    again = client.get("/api/v1/registrations/my", headers=token)
+    assert again.json()[0]["id"] == detail["id"]
+    orders = client.get("/api/v1/payments/my?page=1&limit=10", headers=token)
+    assert orders.status_code == 200 and orders.headers["x-total-count"] == "1"
+    assert orders.json()[0]["id"] == detail["payment_id"]
+    assert orders.json()[0]["registration_code"] == detail["code"]
+    assert orders.json()[0]["can_upload_receipt"] is True
+    payment_detail = client.get(f"/api/v1/payments/{detail['payment_id']}", headers=token).json()
+    assert payment_detail["amount"] == detail["amount"]
+    assert payment_detail["can_upload_receipt"] is True
+
+    other = _register(ctx, f"roster_other_{uuid.uuid4().hex[:8]}")
+    other_token = {"Authorization": f"Bearer {other['access_token']}"}
+    assert client.get("/api/v1/registrations/my", headers=other_token).json() == []
+    assert client.get("/api/v1/payments/my", headers=other_token).json() == []
+    assert client.get(f"/api/v1/registrations/{detail['id']}", headers=other_token).status_code == 404
+    assert client.get(f"/api/v1/payments/{detail['payment_id']}", headers=other_token).status_code == 404
+
+
 
 
 def test_catalog_admin_permissions_and_role_management(sql_api):
@@ -279,6 +344,8 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api):
     assert too_large.status_code == 413
     administrator = _account(ctx, "ADMIN")
     event_manager = _account(ctx, "EVENT_MANAGER")
+    assert client.get("/api/v1/payments/my", headers=event_manager["headers"]).status_code == 403
+    assert client.get("/api/v1/registrations/my", headers=event_manager["headers"]).status_code == 403
     assert client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                        json={"status": "REJECTED"}).status_code == 409
     assert client.post(f"/api/v1/registrations/{registration['id']}/review",
@@ -297,17 +364,38 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api):
     assert (ctx["receipt_dir"] / stored_receipt[1]).read_bytes().startswith(b"UTAENC1")
     assert stored_receipt[2].startswith("enc:v1:")
     assert submitted.json()["status"] == "IN_REVIEW"
+    in_review_orders = client.get("/api/v1/payments/my", headers=token)
+    assert in_review_orders.status_code == 200
+    assert in_review_orders.json()[0]["status"] == "IN_REVIEW"
+    assert in_review_orders.json()[0]["has_receipt"] is True
+    assert in_review_orders.json()[0]["can_upload_receipt"] is False
+    assert client.get(f"/api/v1/payments/{payment_id}", headers=token).json()["can_upload_receipt"] is False
     download = client.get(f"/api/v1/payments/{payment_id}/receipt", headers=token)
     assert download.status_code == 200 and download.content.startswith(b"%PDF-")
+    missing_reason = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
+                                 json={"status": "REJECTED"})
+    assert missing_reason.status_code == 422
     rejected = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                            json={"status": "REJECTED", "comments": "evidencia ilegible"})
     assert rejected.status_code == 200 and rejected.json()["status"] == "REJECTED"
+    assert rejected.json()["notification_status"] == "PENDING"
+    rejected_order = client.get("/api/v1/payments/my", headers=token).json()[0]
+    assert rejected_order["can_upload_receipt"] is True
+    assert rejected_order["review_comments"] == "evidencia ilegible"
+    rejected_email = ctx["db"].execute(text("""
+        SELECT RecipientCiphertext,Subject,BodyText FROM dbo.EmailOutbox
+        WHERE RegistrationId=:id AND MessageType LIKE 'PAYMENT_REJECTED_%'
+    """), {"id": registration["id"]}).one()
+    assert all(value.startswith("enc:v1:") for value in rejected_email)
     resubmitted = client.post(f"/api/v1/payments/{payment_id}/receipt", headers=token,
                               files={"file": ("proof2.pdf", b"%PDF-1.7\nsecond evidence", "application/pdf")})
     assert resubmitted.status_code == 202
     review = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                          json={"status": "PAID", "comments": "comprobante revisado"})
     assert review.status_code == 200 and review.json()["status"] == "PAID"
+    assert review.json()["notification_status"] == "PENDING"
+    paid_order = client.get("/api/v1/payments/my", headers=token).json()[0]
+    assert paid_order["can_upload_receipt"] is False
     approved = client.post(f"/api/v1/registrations/{registration['id']}/review",
                            headers=administrator["headers"],
                            json={"status": "APPROVED", "comments": "datos correctos"})
@@ -384,6 +472,108 @@ def test_reports_aggregates_and_role_boundaries(sql_api):
     assert client.get("/api/v1/reports/payments/summary", headers=event_manager["headers"]).status_code == 403
     assert client.get("/api/v1/reports/overview", headers={"Authorization": f"Bearer {participant['access_token']}"}).status_code == 403
     assert registration["status"] == "PAYMENT_PENDING"
+    assert registration["receipt_url"] == f"/api/v1/registrations/{registration['id']}/receipt"
+    assert registration["email_delivery_status"] == "PENDING"
+    pdf = client.get(registration["receipt_url"],
+                     headers={"Authorization": f"Bearer {participant['access_token']}"})
+    assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF-")
+    manager = _account(ctx, "EVENT_MANAGER")
+    assert client.get(registration["receipt_url"], headers=manager["headers"]).status_code == 403
+    outbox = ctx["db"].execute(text("""
+        SELECT o.RecipientCiphertext,o.Subject,o.BodyText,d.StorageKey,d.EncryptionVersion
+        FROM dbo.EmailOutbox o JOIN dbo.RegistrationDocuments d ON d.DocumentId=o.DocumentId
+        WHERE o.RegistrationId=:id
+    """), {"id": registration["id"]}).mappings().one()
+    assert outbox["RecipientCiphertext"].startswith("enc:v1:")
+    assert outbox["Subject"].startswith("enc:v1:") and outbox["BodyText"].startswith("enc:v1:")
+    assert outbox["EncryptionVersion"] == 1
+
+
+def test_event_registration_config_is_role_protected_and_audited(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    admin = _account(ctx, "ADMIN")
+    participant = _register(ctx, f"config_{uuid.uuid4().hex[:8]}")
+    path = f"/api/v1/admin/events/{ctx['event_id']}/registration-config"
+    payload = {
+        "organization_name": "UTA SUMO CUP", "form_title": "Inscripción oficial",
+        "form_description": "Formulario de prueba", "form_instructions": "Complete los datos",
+        "payment_instructions": "Transferir a la cuenta institucional",
+        "payment_methods": ["Transferencia", "Depósito"],
+        "contact_email": "tesoreria@example.edu", "contact_phone": "0990000000",
+        "receipt_message": "Conserve este documento", "currency": "USD", "is_enabled": True,
+    }
+    denied = client.put(path, headers={"Authorization": f"Bearer {participant['access_token']}"}, json=payload)
+    assert denied.status_code == 403
+    updated = client.put(path, headers=admin["headers"], json=payload)
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["payment_instructions"] == payload["payment_instructions"]
+    public = client.get(f"/api/v1/events/{ctx['event_id']}/registration-config")
+    assert public.status_code == 200 and public.json()["payment_methods"] == payload["payment_methods"]
+    assert "updated_by_user_id" not in public.json()
+    history = client.get(path + "/history", headers=admin["headers"])
+    assert history.status_code == 200 and history.headers["x-total-count"] == "1"
+    assert history.json()[0]["current"]["payment_instructions"] == payload["payment_instructions"]
+
+
+def test_email_outbox_retry_attaches_private_pdf_with_mock_smtp(sql_api, monkeypatch):
+    ctx = sql_api
+    client = ctx["client"]
+    participant = _register(ctx, f"mail_{uuid.uuid4().hex[:8]}")
+    registration = _create_registration(ctx, {"Authorization": f"Bearer {participant['access_token']}"})
+    outbox_id = ctx["db"].execute(text("""
+        SELECT OutboxId FROM dbo.EmailOutbox WHERE RegistrationId=:id
+    """), {"id": registration["id"]}).scalar_one()
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def starttls(self): pass
+        def login(self, *args): pass
+        def send_message(self, message): sent.append(message)
+
+    import app.services.registration_delivery as delivery
+    monkeypatch.setattr(delivery, "SMTP_HOST", "smtp.test")
+    monkeypatch.setattr(delivery, "SMTP_FROM_EMAIL", "no-reply@example.test")
+    monkeypatch.setattr(delivery.smtplib, "SMTP", FakeSMTP)
+    admin = _account(ctx, "ADMIN")
+    response = client.post(f"/api/v1/admin/email-outbox/{outbox_id}/retry", headers=admin["headers"])
+    assert response.status_code == 200 and response.json()["status"] == "SENT"
+    assert len(sent) == 1
+    attachments = list(sent[0].iter_attachments())
+    assert len(attachments) == 1 and attachments[0].get_content_type() == "application/pdf"
+    status = ctx["db"].execute(text("""
+        SELECT DeliveryStatus,Attempts FROM dbo.EmailOutbox WHERE OutboxId=:id
+    """), {"id": outbox_id}).one()
+    assert status == ("SENT", 1)
+
+
+def test_admin_registration_list_filters_by_owner_reference_and_event(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    participant = _register(ctx, f"admin_list_{uuid.uuid4().hex[:8]}")
+    registration = _create_registration(ctx, {"Authorization": f"Bearer {participant['access_token']}"})
+    admin = _account(ctx, "ADMIN")
+    path = "/api/v1/admin/registrations"
+    denied = client.get(path, headers={"Authorization": f"Bearer {participant['access_token']}"})
+    assert denied.status_code == 403
+    submitted = client.post(f"/api/v1/payments/{registration['payment_id']}/receipt",
+                            headers={"Authorization": f"Bearer {participant['access_token']}"},
+                            data={"payment_reference": "SUMO-TRANSFER-7788"},
+                            files={"file": ("proof.pdf", b"%PDF-1.7\nevidence", "application/pdf")})
+    assert submitted.status_code == 202
+    query = (f"?event_id={ctx['event_id']}&payment_status=IN_REVIEW"
+             f"&participant_email={participant['user']['email']}&payment_reference=SUMO-TRANSFER-7788")
+    response = client.get(path + query, headers=admin["headers"])
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 1
+    item = response.json()["items"][0]
+    assert item["id"] == registration["id"]
+    assert item["payment_reference"] == "SUMO-TRANSFER-7788"
+    assert item["participant_email"] == participant["user"]["email"]
+    assert response.headers["x-total-count"] == "1"
 
 
 def test_live_scoring_is_auditable_role_protected_and_idempotent(sql_api):
@@ -452,7 +642,7 @@ def test_registration_rolls_back_every_row_when_payment_insert_fails(sql_api, mo
     client = ctx["client"]
     participant = _register(ctx, f"atomic_{uuid.uuid4().hex[:8]}")
     token = {"Authorization": f"Bearer {participant['access_token']}"}
-    profile, team, robot = _owned_resources(ctx, token)
+    _profile, team, robot = _owned_resources(ctx, token)
     original_execute = ctx["db"].execute
 
     def fail_payment_insert(statement, *args, **kwargs):
@@ -463,13 +653,21 @@ def test_registration_rolls_back_every_row_when_payment_insert_fails(sql_api, mo
     monkeypatch.setattr(ctx["db"], "execute", fail_payment_insert)
     before = {
         table: ctx["db"].execute(text(f"SELECT COUNT_BIG(*) FROM dbo.{table}")).scalar_one()
-        for table in ("Registrations", "RegistrationParticipants", "Payments", "StatusHistory")
+        for table in ("Participants", "Registrations", "RegistrationParticipants", "Payments",
+                      "StatusHistory", "RegistrationDocuments", "EmailOutbox")
     }
     with TestClient(main.app, raise_server_exceptions=False) as isolated_client:
         response = isolated_client.post("/api/v1/registrations", headers=token, json={
             "event_id": ctx["event_id"], "category_id": ctx["category_id"],
             "team_id": team["id"], "robot_id": robot["id"],
-            "participants": [{"participant_id": profile["id"], "role": "PARTICIPANT"}],
+            "participants": [
+                {"role": "PARTICIPANT", "first_name": "Atomic", "last_name": "One",
+                 "institution_id": ctx["institution_id"], "mobile_phone": None},
+                {"role": "PARTICIPANT", "first_name": "Atomic", "last_name": "Two",
+                 "institution_id": ctx["institution_id"], "mobile_phone": None},
+                {"role": "COACH", "first_name": "Atomic", "last_name": "Coach",
+                 "institution_id": ctx["institution_id"], "mobile_phone": None},
+            ],
         })
     assert response.status_code == 503, response.text
     after = {
@@ -477,3 +675,34 @@ def test_registration_rolls_back_every_row_when_payment_insert_fails(sql_api, mo
         for table in before
     }
     assert after == before
+
+    # Fail late, after PDF staging and metadata work, to verify the filesystem
+    # artifact is removed and the database transaction remains all-or-nothing.
+    storage_before = set(ctx["receipt_dir"].glob("payment-instruction-*.pdf"))
+
+    def fail_outbox_insert(statement, *args, **kwargs):
+        if "INSERT INTO dbo.EmailOutbox" in str(statement):
+            raise SQLAlchemyError("simulated outbox persistence failure")
+        return original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(ctx["db"], "execute", fail_outbox_insert)
+    with TestClient(main.app, raise_server_exceptions=False) as isolated_client:
+        response = isolated_client.post("/api/v1/registrations", headers=token, json={
+            "event_id": ctx["event_id"], "category_id": ctx["category_id"],
+            "team_id": team["id"], "robot_id": robot["id"],
+            "participants": [
+                {"role": "PARTICIPANT", "first_name": "Late", "last_name": "One",
+                 "institution_id": ctx["institution_id"], "mobile_phone": None},
+                {"role": "PARTICIPANT", "first_name": "Late", "last_name": "Two",
+                 "institution_id": ctx["institution_id"], "mobile_phone": None},
+                {"role": "COACH", "first_name": "Late", "last_name": "Coach",
+                 "institution_id": ctx["institution_id"], "mobile_phone": None},
+            ],
+        })
+    assert response.status_code == 503, response.text
+    after_outbox_failure = {
+        table: ctx["db"].execute(text(f"SELECT COUNT_BIG(*) FROM dbo.{table}")).scalar_one()
+        for table in before
+    }
+    assert after_outbox_failure == before
+    assert set(ctx["receipt_dir"].glob("payment-instruction-*.pdf")) == storage_before

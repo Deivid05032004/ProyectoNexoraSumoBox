@@ -58,6 +58,14 @@ def email_lookup_hash(email: str) -> str:
     return hmac.new(key, normalize_email(email).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def payment_reference_lookup_hash(reference: str | None) -> str | None:
+    if reference is None or not reference.strip():
+        return None
+    key = hmac.new(_key(), b"uta-sumo-payment-reference-index:v1", hashlib.sha256).digest()
+    normalized = " ".join(reference.strip().casefold().split())
+    return hmac.new(key, normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def encrypt_bytes(value: bytes) -> bytes:
     nonce = os.urandom(12)
     return b"UTAENC1" + nonce + AESGCM(_key()).encrypt(nonce, value, _AAD)

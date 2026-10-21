@@ -21,7 +21,8 @@ API_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_DIR))
 
 from database import DB_NAME, DB_SERVER, engine, connection_string
-from app.core.crypto import email_lookup_hash, encrypt_bytes, encrypt_text, is_encrypted
+from app.core.crypto import (email_lookup_hash, encrypt_bytes, encrypt_text, is_encrypted,
+                             decrypt_text, payment_reference_lookup_hash)
 from app.core.config import RECEIPT_STORAGE_DIR
 
 MIGRATIONS = [
@@ -37,6 +38,14 @@ MIGRATIONS = [
     ROOT / "database/scripts/10_competition_scoring.sql",
     ROOT / "database/scripts/11_competition_status_history.sql",
     ROOT / "database/scripts/12_finalize_roles.sql",
+    ROOT / "database/scripts/13_registration_participant_positions.sql",
+    ROOT / "database/scripts/14_registration_delivery.sql",
+    ROOT / "database/scripts/15_registration_config_ciphertext_capacity.sql",
+    ROOT / "database/scripts/16_registration_document_version.sql",
+    ROOT / "database/scripts/17_admin_registration_filters.sql",
+    ROOT / "database/scripts/18_event_regulations.sql",
+    ROOT / "database/scripts/19_current_combat.sql",
+    ROOT / "database/scripts/20_match_team_robot.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",
@@ -210,6 +219,25 @@ def _apply_migrations() -> None:
             _restore_receipt_files(file_backups)
             raise
         print(f"APPLIED {migration_id}")
+    _backfill_payment_reference_hashes()
+
+
+def _backfill_payment_reference_hashes() -> None:
+    """Build keyed exact-match indexes for legacy encrypted transfer references."""
+    with engine.begin() as conn:
+        if conn.execute(text("SELECT COL_LENGTH('dbo.Payments','PaymentReferenceLookupHash')")).scalar_one() is None:
+            return
+        rows = conn.execute(text("""
+            SELECT PaymentId,PaymentReference FROM dbo.Payments
+            WHERE PaymentReference IS NOT NULL AND PaymentReferenceLookupHash IS NULL
+        """)).all()
+        for payment_id, encrypted_reference in rows:
+            reference = decrypt_text(encrypted_reference)
+            lookup_hash = payment_reference_lookup_hash(reference)
+            if lookup_hash:
+                conn.execute(text("""
+                    UPDATE dbo.Payments SET PaymentReferenceLookupHash=:hash WHERE PaymentId=:id
+                """), {"hash": lookup_hash, "id": payment_id})
 
 
 def _backfill_encrypted_pii(conn, file_backups) -> None:

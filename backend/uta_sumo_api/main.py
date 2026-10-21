@@ -5,7 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import logging
 
 from database import verificar_conexion
-from app.core.config import ALLOWED_ORIGINS, MAX_RECEIPT_BYTES
+from app.core.config import ALLOWED_ORIGINS, MAX_RECEIPT_BYTES, MAX_REGULATION_BYTES
 
 from routers.categories import router as categories_router
 from routers.auth import router as auth_router
@@ -15,18 +15,32 @@ from routers.registrations import router as registrations_router
 from routers.payments import router as payments_router
 from routers.admin import router as admin_router
 from routers.reports import router as reports_router
-from routers.competition import router as competition_router
+from routers.competition import router as competition_router, live_router as combat_live_router
+from routers.registration_config import router as registration_config_router
+from routers.delivery_admin import router as delivery_admin_router
+from routers.admin_registrations import router as admin_registrations_router
+from routers.regulations import router as regulations_router
 class ReceiptUploadSizeLimit:
     """Bound receipt bodies even when clients omit Content-Length or use chunks."""
 
-    def __init__(self, app, max_bytes: int):
+    def __init__(self, app, max_bytes: int, max_regulation_bytes: int | None = None):
         self.app = app
-        self.max_bytes = max_bytes + 256 * 1024  # multipart headers and boundaries
+        self.max_receipt_bytes = max_bytes + 256 * 1024  # multipart headers and boundaries
+        # Keep the original two-argument constructor compatible with tests and
+        # any local middleware wiring that only configures payment receipts.
+        self.max_regulation_bytes = (max_bytes if max_regulation_bytes is None else max_regulation_bytes) + 256 * 1024
 
     async def __call__(self, scope, receive, send):
-        if (scope["type"] != "http" or scope["method"] != "POST"
-                or not scope["path"].startswith("/api/v1/payments/")
-                or not scope["path"].endswith("/receipt")):
+        if scope["type"] != "http" or scope["method"] != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope["path"]
+        if path.startswith("/api/v1/payments/") and path.endswith("/receipt"):
+            max_body = self.max_receipt_bytes
+        elif path.startswith("/api/v1/admin/events/") and path.endswith("/regulations"):
+            max_body = self.max_regulation_bytes
+        else:
             await self.app(scope, receive, send)
             return
 
@@ -34,7 +48,7 @@ class ReceiptUploadSizeLimit:
                            if key.lower() == b"content-length"), None)
         if raw_length is not None:
             try:
-                if int(raw_length) > self.max_bytes:
+                if int(raw_length) > max_body:
                     response = JSONResponse(status_code=413, content={"detail": "La solicitud supera el tamaño máximo permitido."})
                     await response(scope, receive, send)
                     return
@@ -51,7 +65,7 @@ class ReceiptUploadSizeLimit:
                 return
             if message["type"] == "http.request":
                 total += len(message.get("body", b""))
-                if total > self.max_bytes:
+                if total > max_body:
                     response = JSONResponse(status_code=413, content={"detail": "La solicitud supera el tamaño máximo permitido."})
                     await response(scope, receive, send)
                     return
@@ -91,7 +105,8 @@ async def database_error_handler(request, exc):
     })
 
 
-app.add_middleware(ReceiptUploadSizeLimit, max_bytes=MAX_RECEIPT_BYTES)
+app.add_middleware(ReceiptUploadSizeLimit, max_bytes=MAX_RECEIPT_BYTES,
+                   max_regulation_bytes=MAX_REGULATION_BYTES)
 
 app.add_middleware(
     CORSMiddleware,
@@ -111,6 +126,11 @@ app.include_router(payments_router)
 app.include_router(admin_router)
 app.include_router(reports_router)
 app.include_router(competition_router)
+app.include_router(combat_live_router)
+app.include_router(registration_config_router)
+app.include_router(delivery_admin_router)
+app.include_router(admin_registrations_router)
+app.include_router(regulations_router)
 
 @app.get("/")
 def inicio():

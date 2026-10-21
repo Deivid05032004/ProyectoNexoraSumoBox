@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://localhost:5174"
     receipt_storage_dir: str | None = None
     max_receipt_bytes: int = 5 * 1024 * 1024
+    regulation_storage_dir: str | None = None
+    max_regulation_bytes: int = 20 * 1024 * 1024
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "UTA SUMO ROBOTICS CUP"
+    smtp_starttls: bool = True
 
 
 settings = Settings()
@@ -37,7 +46,18 @@ if "*" in ALLOWED_ORIGINS:
     raise RuntimeError("CORS_ORIGINS no admite '*' cuando se permiten credenciales.")
 RECEIPT_STORAGE_DIR = Path(settings.receipt_storage_dir or (BASE_DIR / "storage" / "receipts")).resolve()
 MAX_RECEIPT_BYTES = settings.max_receipt_bytes
+REGULATION_STORAGE_DIR = Path(settings.regulation_storage_dir or (BASE_DIR / "storage" / "regulations")).resolve()
+MAX_REGULATION_BYTES = settings.max_regulation_bytes
+SMTP_HOST = settings.smtp_host.strip()
+SMTP_PORT = settings.smtp_port
+SMTP_USERNAME = settings.smtp_username
+SMTP_PASSWORD = settings.smtp_password
+SMTP_FROM_EMAIL = settings.smtp_from_email.strip()
+SMTP_FROM_NAME = settings.smtp_from_name.strip()
+SMTP_STARTTLS = settings.smtp_starttls
 if ACCESS_TOKEN_EXPIRE_MINUTES < 1 or ACCESS_TOKEN_EXPIRE_MINUTES > 1440:
     raise RuntimeError("ACCESS_TOKEN_EXPIRE_MINUTES debe estar entre 1 y 1440.")
 if MAX_RECEIPT_BYTES < 1024 or MAX_RECEIPT_BYTES > 20 * 1024 * 1024:
     raise RuntimeError("MAX_RECEIPT_BYTES debe estar entre 1 KiB y 20 MiB.")
+if MAX_REGULATION_BYTES < 1024 or MAX_REGULATION_BYTES > 100 * 1024 * 1024:
+    raise RuntimeError("MAX_REGULATION_BYTES debe estar entre 1 KiB y 100 MiB.")

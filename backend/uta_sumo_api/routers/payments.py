@@ -9,11 +9,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import MAX_RECEIPT_BYTES, RECEIPT_STORAGE_DIR
-from app.core.crypto import decrypt_bytes, decrypt_text, encrypt_bytes, encrypt_text
+from app.core.crypto import (decrypt_bytes, decrypt_text, encrypt_bytes, encrypt_text,
+                             payment_reference_lookup_hash)
 from app.core.pagination import apply_pagination_headers
 from app.dependencies.auth import get_current_user, require_roles
 from app.schemas.payment import PaymentReview
 from app.services.registration_service import change_registration_status
+from app.services.registration_delivery import deliver_outbox
 from database import get_db
 
 router = APIRouter(prefix="/api/v1/payments", tags=["Pagos"])
@@ -29,10 +31,12 @@ _FORMATS = {
 def _payment(db: Session, payment_id: int):
     row = db.execute(text("""
         SELECT p.PaymentId AS id, p.RegistrationId AS registration_id,
-          p.TariffId AS tariff_id, p.Amount AS amount, p.PaymentStatus AS status,
+          p.TariffId AS tariff_id, p.Amount AS amount,p.CurrencyCode AS currency, p.PaymentStatus AS status,
           p.PaymentReference AS payment_reference, p.VerifiedByUserId AS verified_by_user_id,
           p.VerifiedAt AS verified_at, r.CreatedByUserId AS owner_user_id,
           s.Code AS registration_status,
+          (SELECT TOP (1) h.Comments FROM dbo.StatusHistory h
+             WHERE h.RegistrationId=r.RegistrationId ORDER BY h.ChangedAt DESC,h.HistoryId DESC) AS review_comments,
           pr.StorageKey AS receipt_key, pr.MediaType AS receipt_media_type,
           pr.UploadedAt AS receipt_uploaded_at, pr.EncryptionVersion AS receipt_encryption_version
         FROM dbo.Payments p JOIN dbo.Registrations r ON r.RegistrationId=p.RegistrationId
@@ -44,6 +48,7 @@ def _payment(db: Session, payment_id: int):
         return None
     result = dict(row)
     result["payment_reference"] = decrypt_text(result["payment_reference"])
+    result["review_comments"] = decrypt_text(result["review_comments"])
     return result
 
 
@@ -60,6 +65,21 @@ def _authorize(payment, user):
 def list_payments(response: Response, status: str | None = None, page: int = Query(1, ge=1, le=1_000_000),
                   limit: int = Query(50, ge=1, le=100),
                   user=Depends(get_current_user), db: Session = Depends(get_db)):
+    return _list_payments(response, status, page, limit, user, db)
+
+
+@router.get("/my")
+def my_payments(response: Response,
+                status: str | None = Query(default=None, pattern="^(PENDING|IN_REVIEW|PAID|REJECTED)$"),
+                page: int = Query(1, ge=1, le=1_000_000),
+                limit: int = Query(50, ge=1, le=100),
+                user=Depends(require_roles("PARTICIPANT")), db: Session = Depends(get_db)):
+    """Return the authenticated participant's existing payment orders."""
+    return _list_payments(response, status, page, limit, user, db)
+
+
+def _list_payments(response: Response, status: str | None, page: int, limit: int,
+                   user, db: Session):
     if user["role"] not in ("ADMIN", "PARTICIPANT"):
         raise HTTPException(status_code=403, detail="No tiene permiso para consultar pagos.")
     clauses, params = [], {"offset": (page-1)*limit, "limit": limit}
@@ -76,11 +96,23 @@ def list_payments(response: Response, status: str | None = None, page: int = Que
     """), params).scalar_one()
     rows = db.execute(text(f"""
         SELECT p.PaymentId AS id, p.RegistrationId AS registration_id,
-          p.Amount AS amount, p.PaymentStatus AS status, p.PaymentReference AS payment_reference,
-          p.CreatedAt AS created_at, r.CreatedByUserId AS owner_user_id,
-          e.Name AS event_name, t.Name AS team_name
+          CONVERT(varchar(36),r.RegistrationCode) AS registration_code,
+          p.Amount AS amount,p.CurrencyCode AS currency, p.PaymentStatus AS status, p.PaymentReference AS payment_reference,
+          p.CreatedAt AS created_at, r.RegisteredAt AS registration_created_at,
+          s.Code AS registration_status, r.EventId AS event_id, e.Name AS event_name,
+          (SELECT TOP (1) h.Comments FROM dbo.StatusHistory h
+             WHERE h.RegistrationId=r.RegistrationId ORDER BY h.ChangedAt DESC,h.HistoryId DESC) AS review_comments,
+          r.CategoryId AS category_id, c.Name AS category_name,
+          t.TeamId AS team_id, t.Name AS team_name, b.RobotId AS robot_id,
+          b.Name AS robot_name, pr.UploadedAt AS receipt_uploaded_at,
+          CASE WHEN pr.ReceiptId IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS has_receipt
         FROM dbo.Payments p JOIN dbo.Registrations r ON r.RegistrationId=p.RegistrationId
-        JOIN dbo.Events e ON e.EventId=r.EventId JOIN dbo.Teams t ON t.TeamId=r.TeamId
+        JOIN dbo.Events e ON e.EventId=r.EventId
+        JOIN dbo.Categories c ON c.CategoryId=r.CategoryId
+        JOIN dbo.Teams t ON t.TeamId=r.TeamId
+        JOIN dbo.Robots b ON b.RobotId=r.RobotId
+        JOIN dbo.RegistrationStatuses s ON s.StatusId=r.StatusId
+        LEFT JOIN dbo.PaymentReceipts pr ON pr.PaymentId=p.PaymentId AND pr.IsCurrent=1
         {where} ORDER BY p.CreatedAt DESC,p.PaymentId DESC
         OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
     """), params).mappings().all()
@@ -88,7 +120,13 @@ def list_payments(response: Response, status: str | None = None, page: int = Que
     result = [dict(r) for r in rows]
     for row in result:
         row["payment_reference"] = decrypt_text(row["payment_reference"])
+        row["review_comments"] = decrypt_text(row["review_comments"])
         row["team_name"] = decrypt_text(row["team_name"])
+        row["robot_name"] = decrypt_text(row["robot_name"])
+        row["can_upload_receipt"] = (
+            row["status"] in ("PENDING", "REJECTED")
+            and row["registration_status"] == "PAYMENT_PENDING"
+        )
     return result
 
 
@@ -96,6 +134,11 @@ def list_payments(response: Response, status: str | None = None, page: int = Que
 def get_payment(payment_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
     payment = _payment(db, payment_id)
     _authorize(payment, user)
+    payment["has_receipt"] = bool(payment.get("receipt_key"))
+    payment["can_upload_receipt"] = (
+        payment["status"] in ("PENDING", "REJECTED")
+        and payment["registration_status"] == "PAYMENT_PENDING"
+    )
     payment.pop("owner_user_id", None)
     payment.pop("receipt_key", None)
     return payment
@@ -142,9 +185,11 @@ async def submit_receipt(payment_id: int, file: UploadFile = File(...),
         """), {"payment": payment_id, "key": key, "type": expected[0], "user": user["user_id"]})
         db.execute(text("""
             UPDATE dbo.Payments SET PaymentStatus='IN_REVIEW', PaymentReference=:reference,
+              PaymentReferenceLookupHash=:reference_hash,
               VerifiedByUserId=NULL, VerifiedAt=NULL
             WHERE PaymentId=:id
-        """), {"id": payment_id, "reference": encrypt_text(payment_reference)})
+        """), {"id": payment_id, "reference": encrypt_text(payment_reference),
+              "reference_hash": payment_reference_lookup_hash(payment_reference)})
         registration_id = payment["registration_id"]
         change_registration_status(db, registration_id, "PAYMENT_REVIEW", user["user_id"],
                                   "Comprobante presentado; pendiente de revisión de tesorería")
@@ -185,10 +230,13 @@ def review_payment(payment_id: int, payload: PaymentReview,
                    user=Depends(require_roles("ADMIN")),
                    db: Session = Depends(get_db)):
     row = db.execute(text("""
-        SELECT p.PaymentStatus,p.RegistrationId,s.Code
+        SELECT p.PaymentStatus,p.RegistrationId,s.Code,e.Name AS event_name,
+          p.Amount,p.CurrencyCode,u.EmailCiphertext,u.FirstName
         FROM dbo.Payments p WITH (UPDLOCK, ROWLOCK)
         JOIN dbo.Registrations r ON r.RegistrationId=p.RegistrationId
         JOIN dbo.RegistrationStatuses s ON s.StatusId=r.StatusId
+        JOIN dbo.Events e ON e.EventId=r.EventId
+        JOIN dbo.Users u ON u.UserId=r.CreatedByUserId
         WHERE p.PaymentId=:id
     """), {"id": payment_id}).first()
     if row is None:
@@ -197,6 +245,8 @@ def review_payment(payment_id: int, payload: PaymentReview,
         raise HTTPException(status_code=409, detail="Solo se revisan pagos con comprobante pendiente.")
     if row[2] != "PAYMENT_REVIEW":
         raise HTTPException(status_code=409, detail="El estado de inscripción no coincide con la revisión de pago.")
+    if payload.status == "REJECTED" and not (payload.comments and payload.comments.strip()):
+        raise HTTPException(status_code=422, detail="Indique el motivo del rechazo.")
     registration_id = row[1]
     target_registration_status = "PENDING" if payload.status == "PAID" else "PAYMENT_PENDING"
     try:
@@ -211,11 +261,35 @@ def review_payment(payment_id: int, payload: PaymentReview,
             raise HTTPException(status_code=409, detail="El pago cambió durante la revisión.")
         change_registration_status(db, registration_id, target_registration_status,
                                   user["user_id"], payload.comments)
+        from app.core.crypto import decrypt_text
+        recipient = decrypt_text(row[6])
+        participant_name = decrypt_text(row[7])
+        if payload.status == "PAID":
+            subject = f"Pago aprobado — {row[3]}"
+            body = f"Hola {participant_name},\n\nEl pago de tu inscripción para {row[3]} fue aprobado.\n"
+            message_type = "PAYMENT_APPROVED"
+        else:
+            subject = f"Comprobante de pago rechazado — {row[3]}"
+            body = (f"Hola {participant_name},\n\nEl comprobante de pago para {row[3]} requiere corrección.\n"
+                    f"Motivo: {payload.comments.strip()}\nPuedes cargar un nuevo comprobante desde la plataforma.\n")
+            message_type = f"PAYMENT_REJECTED_{uuid4().hex[:23]}"
+        outbox_id = db.execute(text("""
+            INSERT INTO dbo.EmailOutbox(RegistrationId,MessageType,RecipientCiphertext,Subject,BodyText)
+            OUTPUT INSERTED.OutboxId
+            VALUES(:registration,:message_type,:recipient,:subject,:body)
+        """), {"registration": registration_id, "message_type": message_type,
+              "recipient": encrypt_text(recipient), "subject": encrypt_text(subject),
+              "body": encrypt_text(body)}).scalar_one()
         db.commit()
     except SQLAlchemyError:
         db.rollback()
         raise HTTPException(status_code=503, detail="No se pudo registrar la revisión del pago.")
     payment = _payment(db, payment_id)
+    try:
+        payment["notification_status"] = deliver_outbox(db, outbox_id)
+    except SQLAlchemyError:
+        db.rollback()
+        payment["notification_status"] = "PENDING"
     payment.pop("owner_user_id", None)
     payment.pop("receipt_key", None)
     return payment
