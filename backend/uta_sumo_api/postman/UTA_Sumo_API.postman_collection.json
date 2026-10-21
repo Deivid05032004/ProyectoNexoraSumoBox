@@ -790,7 +790,8 @@
               "listen": "test",
               "script": {
                 "exec": [
-                  "if(pm.response.code===201){pm.environment.set('registrationId',pm.response.json().id);pm.environment.set('paymentId',pm.response.json().payment_id);pm.environment.set('registrationCode',pm.response.json().code);}"
+                  "if(pm.response.code===201){pm.environment.set('registrationId',pm.response.json().id);pm.environment.set('paymentId',pm.response.json().payment_id);pm.environment.set('registrationCode',pm.response.json().code);}",
+                  "if(pm.response.code===201){pm.environment.set('receiptUrl',pm.response.json().receipt_url);pm.environment.set('emailDeliveryStatus',pm.response.json().email_delivery_status);}"
                 ]
               }
             }
@@ -800,7 +801,7 @@
           "name": "Mis inscripciones",
           "request": {
             "method": "GET",
-            "url": "{{baseUrl}}/api/v1/registrations?page=1&limit=50",
+            "url": "{{baseUrl}}/api/v1/registrations/my?page=1&limit=50",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -810,7 +811,8 @@
                   "type": "string"
                 }
               ]
-            }
+            },
+            "description": "Recupera desde SQL las inscripciones y órdenes persistidas del participante autenticado, incluidos los integrantes y los estados actuales."
           }
         },
         {
@@ -878,7 +880,7 @@
           "name": "Pagos propios",
           "request": {
             "method": "GET",
-            "url": "{{baseUrl}}/api/v1/payments",
+            "url": "{{baseUrl}}/api/v1/payments/my?page=1&limit=50",
             "auth": {
               "type": "bearer",
               "bearer": [
@@ -888,7 +890,8 @@
                   "type": "string"
                 }
               ]
-            }
+            },
+            "description": "Recupera las órdenes de pago existentes del participante autenticado. No crea pagos nuevos."
           }
         },
         {
@@ -1554,6 +1557,354 @@
           }
         }
       ]
+    },
+    {
+      "name": "Configuración, PDF y correo",
+      "item": [
+        {
+          "name": "Configuración pública del evento",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/registration-config"
+          }
+        },
+        {
+          "name": "Consultar configuración como ADMIN",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/events/{{eventId}}/registration-config",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Actualizar configuración como ADMIN",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/api/v1/admin/events/{{eventId}}/registration-config",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"organization_name\": \"UTA SUMO ROBOTICS CUP\",\n  \"form_title\": \"Inscripción oficial\",\n  \"form_description\": \"Formulario del evento\",\n  \"form_instructions\": \"Complete los datos del equipo.\",\n  \"payment_instructions\": \"Realice la transferencia e ingrese su referencia.\",\n  \"payment_methods\": [\n    \"Transferencia bancaria\"\n  ],\n  \"contact_email\": \"tesoreria@example.com\",\n  \"contact_phone\": null,\n  \"receipt_message\": \"Conserve el comprobante.\",\n  \"currency\": \"USD\",\n  \"is_enabled\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "Historial de configuración",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/events/{{eventId}}/registration-config/history?page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Descargar PDF de mi inscripción",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/registrations/{{registrationId}}/receipt",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bandeja de correo",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/email-outbox?page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if(pm.response.code===200&&pm.response.json().length){pm.environment.set('outboxId',pm.response.json()[0].id);}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reintentar correo pendiente/fallido",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/admin/email-outbox/{{outboxId}}/retry",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Reenviar recibo al participante",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/v1/admin/registrations/{{registrationId}}/resend-receipt",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Inscripciones administrativas paginadas",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/admin/registrations?event_id={{eventId}}&page=1&limit=50",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{adminToken}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reglamentos PDF",
+      "item": [
+        {
+          "name": "Consultar reglamento publicado de la categoría",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/events/{{eventId}}/regulations?category_id={{categoryId}}"
+          }
+        },
+        {
+          "name": "Subir reglamento PDF (queda como borrador)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "",
+                  "description": "Selecciona Reglamento_Sumo_Amateur.pdf en Postman"
+                },
+                {
+                  "key": "title",
+                  "value": "Reglamento categoría Mini Sumo Amateur RC",
+                  "type": "text"
+                },
+                {
+                  "key": "category_id",
+                  "value": "{{categoryId}}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/api/v1/admin/events/{{eventId}}/regulations"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Reglamento cargado como borrador', function () { pm.response.to.have.status(201); });",
+                  "if (pm.response.code === 201) pm.environment.set('regulationId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Publicar borrador",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/regulations/{{regulationId}}/publish"
+          }
+        },
+        {
+          "name": "Ver reglamentos administrativos del evento",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/v1/admin/events/{{eventId}}/regulations?page=1&limit=50"
+          }
+        },
+        {
+          "name": "Descargar reglamento publicado",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/regulations/{{regulationId}}/file"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Combate actual y marcador en vivo",
+      "item": [
+        {
+          "name": "Consultar combate actual",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/v1/competition/combate-actual"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Combate actual visible', function () { pm.response.to.have.status(200); });",
+                  "if (pm.response.code === 200 && pm.response.json().match_id) pm.environment.set('matchId', pm.response.json().match_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Seleccionar combate programado",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{event_managerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"match_id\": {{matchId}}\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/competition/combate-actual"
+          }
+        },
+        {
+          "name": "Iniciar el combate",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{event_managerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"estado\": \"EN_VIVO\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/competition/combate-actual"
+          }
+        },
+        {
+          "name": "Actualizar marcador",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{event_managerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"puntaje_a\": 2,\n  \"puntaje_b\": 1,\n  \"motivo\": \"Marcador confirmado por el juez\"\n}"
+            },
+            "url": "{{baseUrl}}/api/v1/competition/combate-actual"
+          }
+        }
+      ],
+      "description": "Para WebSocket, crea una solicitud WebSocket en Postman y conecta a ws://127.0.0.1:8000/ws/combate-actual; no requiere autenticación. Envía una instantánea inicial y cada cambio confirmado."
     }
   ]
 }

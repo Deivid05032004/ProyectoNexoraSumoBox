@@ -12,6 +12,8 @@ email-validator>=2.2,<3
 bcrypt==5.0.0  # legacy-hash verification during migration
 python-multipart>=0.0.20,<1
 google-auth[requests]>=2.40,<3
+reportlab>=4.2,<5
+pypdf>=5,<7
 
 # Development/test dependency
 pytest>=8.4,<10

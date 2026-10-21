@@ -1,3 +1,10 @@
+import asyncio
+
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.combat import CurrentCombatUpdate
+from app.services.combat_live import LiveCombatConnectionManager
 from routers.competition import can_transition, rank_rows
 
 
@@ -18,3 +25,47 @@ def test_leaderboard_preserves_ties_and_ranks_categories_independently():
         {"category_id": 2, "team_id": 3, "points": 7},
     ]
     assert [row["rank"] for row in rank_rows(rows)] == [1, 1, 2, 1]
+
+
+def test_current_combat_update_accepts_spanish_api_contract_and_requires_pair_scores():
+    status = CurrentCombatUpdate.model_validate({"match_id": 12, "estado": "EN_VIVO"})
+    assert status.match_id == 12 and status.status == "EN_VIVO"
+
+    score = CurrentCombatUpdate.model_validate({
+        "puntaje_a": 2, "puntaje_b": 1, "motivo": "Corrección arbitral",
+    })
+    assert (score.score_a, score.score_b) == (2, 1)
+    assert score.reason == "Corrección arbitral"
+
+    with pytest.raises(ValidationError):
+        CurrentCombatUpdate.model_validate({"puntaje_a": 2, "motivo": "Incomplete"})
+    with pytest.raises(ValidationError):
+        CurrentCombatUpdate.model_validate({"puntaje_a": 2, "puntaje_b": 1})
+    with pytest.raises(ValidationError):
+        CurrentCombatUpdate.model_validate({"estado": "INVALIDO"})
+
+
+def test_live_combat_manager_sends_initial_snapshot_and_updates_then_disconnects():
+    class FakeWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, value):
+            self.messages.append(value)
+
+    async def exercise():
+        manager = LiveCombatConnectionManager()
+        socket = FakeWebSocket()
+        initial = {"active": False, "estado": "SIN_COMBATE_ACTIVO"}
+        await manager.connect(socket, lambda: initial)
+        await manager.broadcast({"active": True, "estado": "EN_VIVO"})
+        assert socket.messages == [initial, {"active": True, "estado": "EN_VIVO"}]
+
+        await manager.disconnect(socket)
+        await manager.broadcast({"active": True, "estado": "FINALIZADO"})
+        assert len(socket.messages) == 2
+
+    asyncio.run(exercise())

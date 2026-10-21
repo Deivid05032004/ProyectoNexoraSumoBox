@@ -380,6 +380,9 @@ la restricción SQL protege además de la validación del endpoint.
 | `GET` | `/api/v1/events/{id}/leaderboard?category_id=1` | Clasificación pública; empates conservan mismo rango |
 | `GET` | `/api/v1/events/{id}/scores/history?category_id=1&page=1&limit=50` | Historial público paginado, sin identidad del operador |
 | `WS` | `/api/v1/events/{id}/live` | WebSocket público de estado y clasificación; actualización detectada cada dos segundos |
+| `GET` | `/api/v1/competition/combate-actual` | Combate seleccionado con robots, instituciones, marcador y estado; público |
+| `PUT` | `/api/v1/competition/combate-actual` | Selecciona/actualiza combate o marcador; requiere ADMIN/EVENT_MANAGER (REVIEWER migrado a EVENT_MANAGER) |
+| `WS` | `/ws/combate-actual` | Instantánea inicial y broadcast inmediato tras confirmar una actualización |
 
 Los puntos se almacenan como movimientos append-only: cualquier corrección
 agrega un movimiento compensatorio con motivo en vez de editar el anterior. El
@@ -482,14 +485,47 @@ $env:RUN_SQLSERVER_TESTS = '1'
 ```
 
 Las pruebas SQL requieren SQL Server, usan transacción de prueba y revierten
-datos. En esta revisión la suite completa con SQL quedó en **21 passed**. La
-colección Postman Smoke se ejecutó con Newman y obtuvo **9 de 9 assertions**;
-las rutas de inscripción, pagos, puntuaciones y permisos también se probaron
-con TestClient contra SQL Server. Las migraciones locales **06 a 12** están
-aplicadas. Aún no se ha autenticado una cuenta Google real porque falta
-configurar `GOOGLE_CLIENT_ID`.
+datos. En esta revisión la suite completa con SQL quedó en **32 passed**. Las
+rutas de inscripción, PDF privado, outbox SMTP simulado, configuración de
+evento, pagos, puntuaciones, reportes, permisos y fallos transaccionales se
+probaron con TestClient contra SQL Server. Las migraciones locales **06 a 20**
+están aplicadas. El SMTP real no se probó porque requiere credenciales de un
+proveedor; el envío simulado verifica que el PDF se adjunta y el outbox pasa a
+`SENT`. Aún falta verificar una cuenta Google real con `GOOGLE_CLIENT_ID`.
 
-## 12. Trabajo restante para un despliegue funcional completo
+## 12. Configuración, recibo PDF y correo
+
+El participante consulta `GET /api/v1/events/{event_id}/registration-config`;
+recibe datos públicos del formulario, habilitación, métodos de pago, tarifas y
+moneda. Un `ADMIN` administra la configuración en
+`GET/PUT /api/v1/admin/events/{event_id}/registration-config`; los precios por
+categoría siguen en `/api/v1/tariffs`. El historial administrativo paginado se
+consulta en `/api/v1/admin/events/{event_id}/registration-config/history`.
+La bandeja de trabajo paginada `GET /api/v1/admin/registrations` admite filtros
+por evento, estados, rango de fechas, código de inscripción, correo del dueño,
+identificador de integrante y referencia bancaria exacta. Los filtros por correo
+y referencia usan hashes HMAC indexados, no columnas descifradas ni texto plano.
+
+Al crear la inscripción, la API genera un PDF de solicitud de pago, guarda el
+archivo cifrado en almacenamiento privado, crea el metadata y el correo outbox
+en la transacción. El PDF se descarga con token y propiedad mediante
+`GET /api/v1/registrations/{id}/receipt`. Es un documento de pago pendiente, no
+una factura ni evidencia de pago. Los pagos nuevos guardan la moneda aplicada;
+los registros previos migran a USD. Los reportes suman por moneda y devuelven
+`totals_by_currency`.
+
+El envío SMTP es opcional: configura `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
+`SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` y `SMTP_STARTTLS` en el
+`.env` del backend. La API hace el intento después del commit; sin SMTP el
+mensaje queda `PENDING`, y ante error queda `FAILED`, sin revertir la
+inscripción. El participante recibe correo tras crear, aprobar o rechazar el
+pago; un rechazo requiere motivo. Un `ADMIN` consulta estados en
+`GET /api/v1/admin/email-outbox`, reintenta con
+`POST /api/v1/admin/email-outbox/{id}/retry` y reenvía el recibo mediante
+`POST /api/v1/admin/registrations/{id}/resend-receipt`. Destinatario, asunto,
+cuerpo, configuración sensible y archivos se cifran con `PII_ENCRYPTION_KEY`.
+
+## 13. Trabajo restante para un despliegue funcional completo
 
 1. Obtener el `GOOGLE_CLIENT_ID`, configurar el proyecto, los orígenes frontend,
    la pantalla de consentimiento y usuarios de prueba; poner el Client ID en los
@@ -498,11 +534,17 @@ configurar `GOOGLE_CLIENT_ID`.
    cuentas; el flujo de interfaz, contrato API y migración ya están listos.
 3. Completar hardening de producción: TLS, cifrado backup/volumen, gestor de
    claves, rate limiting, escaneo de archivos, monitoreo, retención y restore.
-4. Si se requieren descargas de reportes, implementar exportación CSV/XLSX; hoy
-   los reportes se entregan como JSON agregado o paginado.
-5. Evaluar keyset pagination si los volúmenes y profundidad de página lo
-   justifican.
+4. Para escala de producción, ejecutar el despacho de outbox mediante un worker
+   o cola gestionada; en el entorno actual el intento SMTP es síncrono y cuenta
+   con reintento administrativo durable.
+5. Configurar almacenamiento privado persistente y respaldado fuera del
+   checkout local, más un escáner de contenido antes de aceptar archivos.
+6. Si se requieren descargas de reportes, agregar exportación CSV/XLSX; hoy los
+   reportes están disponibles como agregados o filas JSON paginadas desde SQL.
+7. Evaluar keyset pagination si el tamaño de datos y la profundidad de página
+   lo justifican.
 
-La migración local y el build del frontend están listos. La autenticación Google
-real exige configurar el Client ID OAuth en ambos `.env`, reiniciar backend y
-Vite, y completar la prueba con una cuenta Google.
+Las migraciones locales del backend, incluida la 15, están aplicadas. En este
+cambio no se modificó ni se volvió a compilar el frontend. La autenticación
+Google real exige configurar el Client ID OAuth en el backend y el frontend,
+reiniciar ambos servicios y completar la prueba con una cuenta Google.

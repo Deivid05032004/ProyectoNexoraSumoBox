@@ -1,7 +1,51 @@
 from fastapi.testclient import TestClient
+import pytest
+from pydantic import ValidationError
 
 from app.core.security import create_access_token, hash_password, verify_password
 from main import app
+
+
+def test_registration_roster_accepts_three_explicit_members_and_legacy_client():
+    from app.schemas.registration import RegistrationCreate
+
+    common = {"event_id": 1, "category_id": 1, "team_id": 1, "robot_id": 1}
+    roster = RegistrationCreate(**common, participants=[
+        {"role": "PARTICIPANT", "first_name": "Ada", "last_name": "Uno",
+         "institution_id": 1, "mobile_phone": "0990000001"},
+        {"role": "PARTICIPANT", "first_name": "Lin", "last_name": "Dos",
+         "institution_id": 1, "mobile_phone": None},
+        {"role": "COACH", "first_name": "Grace", "last_name": "Coach",
+         "institution_id": 1, "mobile_phone": "0990000003"},
+    ])
+    assert [member.role for member in roster.participants] == ["PARTICIPANT", "PARTICIPANT", "COACH"]
+    assert roster.participants[1].mobile_phone is None
+
+    legacy = RegistrationCreate(**common, participants=[
+        {"participant_id": 7, "role": "PARTICIPANT"},
+    ])
+    assert legacy.participants[0].participant_id == 7
+
+
+def test_registration_roster_rejects_incomplete_or_misordered_members():
+    from app.schemas.registration import RegistrationCreate
+
+    common = {"event_id": 1, "category_id": 1, "team_id": 1, "robot_id": 1}
+    incomplete = [{"role": "PARTICIPANT", "first_name": "Ada", "last_name": "Uno",
+                   "institution_id": 1, "mobile_phone": None}]
+    with pytest.raises(ValidationError):
+        RegistrationCreate(**common, participants=incomplete)
+
+    wrong_order = [
+        {"role": "PARTICIPANT", "first_name": "Ada", "last_name": "Uno",
+         "institution_id": 1, "mobile_phone": None},
+        {"role": "COACH", "first_name": "Grace", "last_name": "Coach",
+         "institution_id": 1, "mobile_phone": None},
+        {"role": "PARTICIPANT", "first_name": "Lin", "last_name": "Dos",
+         "institution_id": 1, "mobile_phone": None},
+    ]
+    with pytest.raises(ValidationError):
+        RegistrationCreate(**common, participants=wrong_order)
 
 
 def test_password_hash_round_trip_and_not_plaintext():
@@ -159,3 +203,34 @@ def test_receipt_limit_rejects_oversized_chunked_body():
     called, output = asyncio.run(run())
     assert not called
     assert output[0]["status"] == 413
+
+
+def test_payment_instruction_pdf_is_structured_and_printable():
+    from app.services.registration_delivery import build_payment_instruction_pdf
+
+    pdf = build_payment_instruction_pdf({
+        "organization_name": "UTA SUMO", "form_title": "Inscripción 2026",
+        "event_name": "Copa 2026", "registration_code": "demo-code",
+        "participant_name": "Ana Pérez", "email": "ana@example.com",
+        "issued_at": "2026-10-20 12:00 UTC", "category_name": "Mini Sumo",
+        "currency": "USD", "amount": 25,
+        "payment_instructions": "Transferir y cargar comprobante", "payment_methods": ["Transferencia"],
+    })
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 1_000
+
+
+def test_registration_config_rejects_duplicate_payment_methods():
+    from app.schemas.registration_config import RegistrationConfigUpdate
+
+    with pytest.raises(ValidationError):
+        RegistrationConfigUpdate(organization_name="UTA", form_title="Inscripción",
+                                 payment_methods=["Transferencia", " transferencia "])
+
+
+def test_payment_reference_hash_supports_exact_search_without_plaintext_storage():
+    from app.core.crypto import payment_reference_lookup_hash
+
+    expected = payment_reference_lookup_hash("  TRANSFER-ABC  123 ")
+    assert expected == payment_reference_lookup_hash("transfer-abc 123")
+    assert expected != payment_reference_lookup_hash("transfer-abc 124")
