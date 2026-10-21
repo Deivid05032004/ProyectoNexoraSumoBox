@@ -1,0 +1,66 @@
+.registration-instructions {
+  margin-top: 12px !important;
+  white-space: pre-line;
+}
+
+.registration-view-switch {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.registration-view-switch button[aria-pressed='true'] {
+  background: var(--registration-accent);
+  color: #fff;
+}
+
+.form-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.registration-closed {
+  margin: 16px 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--registration-warn);
+  background: var(--registration-warn-bg);
+  color: var(--registration-warn);
+  font-size: 14px;
+}
+
+.payment-box ul {
+  margin: 0 0 16px;
+  padding-left: 22px;
+  color: var(--registration-ink);
+}
+
+.secondary-button {
+  margin-top: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--registration-accent);
+  border-radius: 8px;
+  background: #f5f7ff;
+  color: var(--registration-accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.secondary-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+@media (max-width: 720px) {
+  .registration-view-switch {
+    justify-content: stretch;
+  }
+
+  .registration-view-switch button {
+    flex: 1;
+  }
+
+  .form-grid-two {
+    grid-template-columns: 1fr;
+  }
+}
