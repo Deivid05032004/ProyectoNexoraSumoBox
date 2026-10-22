@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  obtenerResultadosTorneo,
-  guardarResultadosTorneo,
   LISTA_EQUIPOS_OFICIALES,
   EQUIPO_POR_DEFINIR,
 } from '../../ModuloResultados/services/resultadosApi';
@@ -24,16 +22,20 @@ export default function ResultadosModal({ isOpen, onClose }) {
   useEffect(() => {
     if (!isOpen) return;
     async function cargar() {
-      const res = await obtenerResultadosTorneo();
-      setCombate(JSON.parse(JSON.stringify(res)));
+      try {
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/competition/combate-actual`);
+        if (!response.ok) throw new Error('Error cargando el combate actual');
+        const res = await response.json();
+        setCombate(res);
+      } catch (error) {
+        console.error('Error al cargar el combate actual:', error);
+      }
     }
     cargar();
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     };
   }, [isOpen]);
-
-  if (!isOpen || !combate) return null;
 
   // ─── PUBLICACIÓN EN TIEMPO REAL ─────────────────────────────────────────
   /**
@@ -172,6 +174,8 @@ const publicarEnVivo = useCallback((datosCombate, inmediato = false) => {
       return nuevo;
     });
   };
+
+  if (!isOpen || !combate) return null;
 
   
   const opcionesGanador = [
