@@ -37,6 +37,21 @@ def test_current_combat_update_accepts_spanish_api_contract_and_requires_pair_sc
     assert (score.score_a, score.score_b) == (2, 1)
     assert score.reason == "Corrección arbitral"
 
+    scoreboard_payload = CurrentCombatUpdate.model_validate({
+        "id_combate": "COMB-01", "match_id": 12,
+        "torneo": "UTA SUMO ROBOTICS CUP 2026", "estado": "En combate",
+        "robotA": {"nombre": "Katana II", "institucion": "UTA", "puntos": 2},
+        "robotB": {"nombre": "Tornado", "institucion": "La Salle", "puntos": 1},
+        "ganador": "No definido", "detalles": "Ronda inicial",
+        "motivo": "Marcador confirmado por juez",
+    })
+    assert scoreboard_payload.status == "EN_VIVO"
+    assert (scoreboard_payload.score_a, scoreboard_payload.score_b) == (2, 1)
+    assert scoreboard_payload.details == "Ronda inicial"
+
+    details_only = CurrentCombatUpdate.model_validate({"match_id": 12, "detalles": "Reanudado"})
+    assert details_only.details == "Reanudado"
+
     with pytest.raises(ValidationError):
         CurrentCombatUpdate.model_validate({"puntaje_a": 2, "motivo": "Incomplete"})
     with pytest.raises(ValidationError):
@@ -67,5 +82,30 @@ def test_live_combat_manager_sends_initial_snapshot_and_updates_then_disconnects
         await manager.disconnect(socket)
         await manager.broadcast({"active": True, "estado": "FINALIZADO"})
         assert len(socket.messages) == 2
+
+    asyncio.run(exercise())
+
+
+def test_live_combat_manager_removes_socket_when_broadcast_detects_disconnect():
+    from starlette.websockets import WebSocketDisconnect
+
+    class FailingWebSocket:
+        def __init__(self):
+            self.fail = False
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, _value):
+            if self.fail:
+                raise WebSocketDisconnect()
+
+    async def exercise():
+        manager = LiveCombatConnectionManager()
+        socket = FailingWebSocket()
+        await manager.connect(socket, lambda: {"active": False})
+        socket.fail = True
+        await manager.broadcast({"active": True})
+        assert socket not in manager._connections
 
     asyncio.run(exercise())

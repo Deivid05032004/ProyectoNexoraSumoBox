@@ -390,6 +390,7 @@ def list_matches(event_id: int, round_id: int | None = Query(default=None, gt=0)
 def _current_combat_snapshot(db: Session) -> dict:
     rows = db.execute(text("""
       SELECT m.MatchId AS match_id,m.MatchNumber AS match_number,m.MatchStatus AS match_status,
+        m.PublicDetails AS details,
         e.EventId AS event_id,e.Name AS event_name,e.CompetitionStatus AS event_status,
         cr.RoundId AS round_id,cr.CategoryId AS category_id,c.Name AS category_name,
         mt.TeamId AS team_id,t.Name AS team_name,i.Name AS institution_name,
@@ -420,14 +421,18 @@ def _current_combat_snapshot(db: Session) -> dict:
       ORDER BY CASE WHEN mt.TeamPosition IS NULL THEN 255 ELSE mt.TeamPosition END,mt.TeamId
     """)).mappings().all()
     if not rows:
-        return {"active": False, "id_combate": None, "match_id": None,
+        return {"active": False, "id": None, "id_combate": None, "match_id": None,
                 "event_id": None, "event_name": None, "round_id": None,
                 "robot_a": None, "institucion_a": None, "equipo_a": None,
                 "team_id_a": None, "robot_id_a": None, "puntaje_a": 0,
                 "robot_b": None, "institucion_b": None, "equipo_b": None,
                 "team_id_b": None, "robot_id_b": None, "puntaje_b": 0,
-                "estado": "SIN_COMBATE_ACTIVO", "category_id": None,
-                "categoria": None, "updated_at": None}
+                "estado": "Sin combate activo", "estado_code": "SIN_COMBATE_ACTIVO",
+                "torneo": "UTA SUMO ROBOTICS CUP 2026", "category_id": None,
+                "categoria": None, "robotA": {"nombre": "Por definir", "institucion": "Sin asignar", "puntos": 0},
+                "robotB": {"nombre": "Por definir", "institucion": "Sin asignar", "puntos": 0},
+                "ganador": "No definido", "detalles": "", "updated_at": None,
+                "ultimaActualizacion": "--:--"}
     if len(rows) != 2:
         raise HTTPException(503, "El combate actual debe tener exactamente dos equipos.")
     first, second = rows
@@ -443,25 +448,46 @@ def _current_combat_snapshot(db: Session) -> dict:
         display_status = "EN_VIVO"
     else:
         display_status = "PROGRAMADO"
+    status_labels = {
+        "PROGRAMADO": "Programado", "EN_VIVO": "En combate",
+        "PAUSADO": "Pausado", "FINALIZADO": "Finalizado",
+        "CANCELADO": "Cancelado",
+    }
+    first_points = int(first["points"] or 0)
+    second_points = int(second["points"] or 0)
+    if display_status != "FINALIZADO" or first_points == second_points:
+        winner = "Empate" if display_status == "FINALIZADO" and first_points == second_points else "No definido"
+    else:
+        winner = decrypt_text(first["robot_name"] if first_points > second_points else second["robot_name"])
     updated_at = first["updated_at"]
+    robot_a = {"nombre": decrypt_text(first["robot_name"]),
+               "institucion": first["institution_name"], "puntos": first_points}
+    robot_b = {"nombre": decrypt_text(second["robot_name"]),
+               "institucion": second["institution_name"], "puntos": second_points}
     return {
         "active": display_status in ("PROGRAMADO", "EN_VIVO", "PAUSADO"),
+        "id": f"COMB-{first['match_number']:02d}",
         "id_combate": f"COMB-{first['match_number']:02d}",
         "match_id": int(first["match_id"]), "event_id": first["event_id"],
-        "event_name": first["event_name"], "round_id": first["round_id"],
+        "event_name": first["event_name"], "torneo": first["event_name"],
+        "round_id": first["round_id"],
         "robot_a": decrypt_text(first["robot_name"]),
         "institucion_a": first["institution_name"],
         "equipo_a": decrypt_text(first["team_name"]),
         "team_id_a": first["team_id"], "robot_id_a": first["robot_id"],
-        "puntaje_a": int(first["points"] or 0),
+        "puntaje_a": first_points,
         "robot_b": decrypt_text(second["robot_name"]),
         "institucion_b": second["institution_name"],
         "equipo_b": decrypt_text(second["team_name"]),
         "team_id_b": second["team_id"], "robot_id_b": second["robot_id"],
-        "puntaje_b": int(second["points"] or 0),
-        "estado": display_status, "category_id": first["category_id"],
+        "puntaje_b": second_points,
+        "estado": status_labels[display_status], "estado_code": display_status,
+        "category_id": first["category_id"],
         "categoria": first["category_name"],
+        "robotA": robot_a, "robotB": robot_b, "ganador": winner,
+        "detalles": first["details"] or "",
         "updated_at": updated_at.isoformat() if updated_at else None,
+        "ultimaActualizacion": updated_at.strftime("%H:%M") if updated_at else "--:--",
     }
 
 
@@ -516,6 +542,7 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
 
         match = db.execute(text("""
           SELECT m.MatchId AS match_id,m.MatchNumber AS match_number,m.MatchStatus AS match_status,
+            m.PublicDetails AS public_details,
             cr.EventId AS event_id,cr.CategoryId AS category_id,e.CompetitionStatus AS event_status
           FROM dbo.CompetitionMatches m WITH (UPDLOCK,ROWLOCK)
           JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
@@ -555,6 +582,11 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
                 _write_event_status(db, match["event_id"], "PAUSED", user["user_id"], payload.reason)
             db.execute(text("UPDATE dbo.CompetitionMatches SET MatchStatus=:status WHERE MatchId=:id"),
                        {"status": effective_match_status, "id": match_id})
+        details_changed = ("details" in payload.model_fields_set
+                           and payload.details != match["public_details"])
+        if details_changed:
+            db.execute(text("UPDATE dbo.CompetitionMatches SET PublicDetails=:details WHERE MatchId=:id"),
+                       {"details": payload.details, "id": match_id})
         elif payload.score_a is not None and (previous_match_status != "LIVE"
                                                or match["event_status"] not in ("LIVE", "PAUSED")):
             raise HTTPException(409, "Solo se puede ajustar el marcador de un combate en curso o pausado.")
@@ -602,7 +634,7 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
             """), {"previous": current_match_id, "next": match_id, "actor": user["user_id"],
                   "action": "SELECTED" if current_match_id is None else "REPLACED",
                   "reason": payload.reason})
-        elif payload.status is not None or score_changed:
+        elif payload.status is not None or score_changed or details_changed:
             db.execute(text("""
               UPDATE dbo.ActiveCombat SET UpdatedByUserId=:actor,UpdatedAt=SYSUTCDATETIME()
               WHERE ActiveCombatId=1 AND MatchId=:match
@@ -611,6 +643,8 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
                 action = "STATUS_CHANGED"
             elif score_changed:
                 action = "SCORE_CHANGED"
+            elif details_changed:
+                action = "DETAILS_CHANGED"
             else:
                 action = None
             if action:
@@ -620,6 +654,18 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
                   VALUES(:match,:match,:actor,:action,:reason)
                 """), {"match": match_id, "actor": user["user_id"], "action": action,
                       "reason": payload.reason})
+
+        if pointer_changed:
+            for action, changed in (("STATUS_CHANGED", payload.status is not None),
+                                    ("SCORE_CHANGED", score_changed),
+                                    ("DETAILS_CHANGED", details_changed)):
+                if changed:
+                    db.execute(text("""
+                      INSERT dbo.ActiveCombatHistory
+                        (PreviousMatchId,NewMatchId,ActorUserId,ActionCode,Reason)
+                      VALUES(:match,:match,:actor,:action,:reason)
+                    """), {"match": match_id, "actor": user["user_id"],
+                          "action": action, "reason": payload.reason})
 
         snapshot = _current_combat_snapshot(db)
         db.commit()

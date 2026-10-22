@@ -230,6 +230,13 @@ def create_tariff(payload: TariffInput, db: Session = Depends(get_db)):
     """), {"event": payload.event_id, "category": payload.category_id,
           "amount": payload.amount, "valid_from": payload.valid_from,
           "valid_until": payload.valid_until, "active": payload.is_active}).mappings().one()
+    if payload.is_active:
+        db.execute(text("""
+            IF NOT EXISTS (SELECT 1 FROM dbo.EventCategories WITH (UPDLOCK,HOLDLOCK)
+                           WHERE EventId=:event AND CategoryId=:category)
+                INSERT INTO dbo.EventCategories(EventId,CategoryId)
+                VALUES(:event,:category)
+        """), {"event": payload.event_id, "category": payload.category_id})
     db.commit()
     return dict(row)
 
@@ -260,6 +267,13 @@ def update_tariff(tariff_id: int, payload: TariffInput, db: Session = Depends(ge
         if not row:
             db.rollback()
             raise HTTPException(status_code=404, detail="Tarifa no encontrada.")
+        if payload.is_active:
+            db.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM dbo.EventCategories WITH (UPDLOCK,HOLDLOCK)
+                               WHERE EventId=:event AND CategoryId=:category)
+                    INSERT INTO dbo.EventCategories(EventId,CategoryId)
+                    VALUES(:event,:category)
+            """), {"event": payload.event_id, "category": payload.category_id})
         db.commit()
         return dict(row)
     except IntegrityError:

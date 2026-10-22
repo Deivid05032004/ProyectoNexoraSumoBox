@@ -53,19 +53,10 @@ class RegistrationCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_roster(self):
-        # Compatibilidad temporal con el formulario desplegado, que envía el
-        # perfil autenticado explícitamente. Las inscripciones completas usan
-        # el orden PARTICIPANT, PARTICIPANT, COACH.
-        if (len(self.participants) == 1
-                and self.participants[0].participant_id is not None
-                and self.participants[0].role == "PARTICIPANT"):
-            return self
-
-        if len(self.participants) != 3:
-            raise ValueError("La inscripción requiere Participante 1, Participante 2 y Coach.")
-        roles = [participant.role for participant in self.participants]
-        if roles != ["PARTICIPANT", "PARTICIPANT", "COACH"]:
-            raise ValueError("Ordene los integrantes como Participante 1, Participante 2 y Coach.")
+        # La cardinalidad/mezcla permitida se configura por evento y categoría
+        # en SQL; aquí se validan solo invariantes independientes del evento.
+        if not any(person.role == "PARTICIPANT" for person in self.participants):
+            raise ValueError("La inscripción requiere al menos un integrante PARTICIPANT.")
         inline_people = [
             (p.first_name.casefold(), p.last_name.casefold(), p.institution_id,
              (p.mobile_phone or "").casefold())

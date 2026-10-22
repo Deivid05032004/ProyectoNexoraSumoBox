@@ -55,9 +55,12 @@ en texto plano y no crea usuarios predeterminados.
 El responsable de una inscripción se obtiene del JWT autenticado; el backend no
 agrega automáticamente la cuenta responsable al roster. El formulario envía
 `POST /api/v1/registrations` con `event_id`, `category_id`, `team_id`,
-`robot_id` y un arreglo `participants`. Para un roster completo, el arreglo
-contiene, en este orden, dos elementos `role: "PARTICIPANT"` y uno
-`role: "COACH"`. Cada integrante puede enviar un `participant_id` ya vinculado
+`robot_id` y un arreglo `participants`. Los límites de participantes y coaches
+se configuran en `EventCategories`, por evento y categoría; la API no codifica
+la política por nombre. Para UTA SUMO ROBOTICS CUP 2026, Mini Sumo Amateur RC
+requiere exactamente dos integrantes `role: "PARTICIPANT"` y ningún coach.
+Otros eventos pueden definir límites diferentes, hasta 30 posiciones.
+Cada integrante puede enviar un `participant_id` ya vinculado
 explícitamente a la misma cuenta, o sus datos `first_name`, `last_name`,
 `institution_id` y `mobile_phone` (use `null` cuando no tenga celular). Los
 perfiles nuevos se guardan sin asociarlos a una cuenta, y sus datos personales
@@ -81,13 +84,22 @@ Ejemplo de roster completo:
 }
 ```
 
-El formulario frontend que actualmente está integrado todavía envía un solo
-`participant_id`; ese formato se conserva temporalmente por compatibilidad. Los
-nuevos formularios deben enviar el roster de tres personas para cumplir el
-reglamento de inscripción. En ambos formatos el backend calcula la tarifa,
+El formulario frontend actual debe consumir `GET /api/v1/events/{event_id}/categories`
+para construir el roster dinámico y validar esos límites; debe dejar de mostrar
+un coach cuando la regla del evento indique `max_coaches: 0`. Los límites se
+validan de nuevo en backend. En ambos formatos el backend calcula la tarifa,
 crea exactamente un pago `PENDING` y registra inscripción, roster, pago e
 historial dentro de una transacción SQL. Los IDs de participante existentes
 solo se aceptan si pertenecen explícitamente a la cuenta autenticada.
+
+Un administrador configura la relación evento/categoría con
+`PUT /api/v1/admin/events/{event_id}/categories/{category_id}` enviando
+`is_active`, `min_participants`, `max_participants`, `min_coaches`,
+`max_coaches` y opcionalmente `max_registrations`. La creación de una tarifa
+activa también vincula esa categoría al evento con reglas generales por
+defecto. La migración 22 conserva asociaciones ya usadas por tarifas o
+inscripciones; la 23 instala los límites del evento oficial 2026 sin cambiar
+inscripciones ni pagos históricos.
 
 `GET /api/v1/registrations/my?page=1&limit=50` devuelve las inscripciones
 persistidas del participante autenticado, con código, evento, categoría,
@@ -247,6 +259,11 @@ La política de datos está en [backend-security-and-migrations.md](../../docs/b
 
 ## Configuración, PDF y entrega de correo
 
+La guía para el equipo frontend está en
+[GUIA_FRONTEND_CORREO.md](../../docs/backend/GUIA_FRONTEND_CORREO.md); describe
+los estados que debe mostrar y confirma que las credenciales SMTP son privadas
+del backend.
+
 La migración aditiva `database/scripts/14_registration_delivery.sql` conserva
 los datos actuales, añade la moneda histórica a cada pago y crea la configuración
 por evento, el archivo privado del recibo, el historial de configuración y el
@@ -290,22 +307,26 @@ auditoría y descarga; no contactan servidores SMTP reales.
 
 ## Combate actual y marcador en tiempo real
 
-Las migraciones `19_current_combat.sql` y `20_match_team_robot.sql` añaden la
+Las migraciones `19_current_combat.sql`, `20_match_team_robot.sql` y
+`24_combat_public_details.sql` añaden la
 selección persistida del combate actual, auditoría de selección y el robot/orden
-de cada equipo en el enfrentamiento. Las migraciones son aditivas; las rondas,
+de cada equipo en el enfrentamiento, más detalles públicos editables. Las migraciones son aditivas; las rondas,
 partidos y puntuaciones existentes se conservan. Los roles `REVIEWER` ya se
 migraron a `EVENT_MANAGER`, por lo que los endpoints de control aceptan
 `ADMIN` y `EVENT_MANAGER`.
 
 - `GET /api/v1/competition/combate-actual` es público y devuelve los dos robots,
-  equipos, instituciones, categoría, marcador y estado. Si aún no se seleccionó
-  un combate devuelve `active: false` y `estado: "SIN_COMBATE_ACTIVO"`.
+  equipos, instituciones, categoría y marcador en el contrato compatible
+  `robotA`/`robotB` que consume la pantalla, además de campos snake_case para
+  clientes anteriores. `estado` es legible (`En combate`, `Finalizado`, etc.)
+  y `estado_code` conserva el código interno. Si no hay combate seleccionado,
+  devuelve placeholders y `active: false`.
 - `PUT /api/v1/competition/combate-actual` requiere `ADMIN` o `EVENT_MANAGER`.
-  Acepta `match_id` para seleccionar un partido programado y `estado` con
-  `PROGRAMADO`, `EN_VIVO`, `PAUSADO`, `FINALIZADO` o `CANCELADO`. También puede
-  aceptar `puntaje_a` y `puntaje_b` juntos, más `motivo`; los valores son
+  Acepta `match_id`, `estado` con códigos internos o `En combate`/`Finalizado`,
+  `robotA.puntos` y `robotB.puntos` juntos, `detalles` y `motivo`. Los puntajes son
   puntajes absolutos y la API persiste solo la diferencia como movimientos
-  auditables en `ScoreEntries`.
+  auditables en `ScoreEntries`. Nombres, instituciones y ganador se derivan de SQL;
+  los valores de presentación enviados por el cliente no son fuente de verdad.
 - `ws://127.0.0.1:8000/ws/combate-actual` es público. Envía una instantánea al
   conectar y transmite el nuevo marcador/estado después de confirmar el commit.
   Cierres y fallos de socket retiran la conexión del administrador. Cambios a

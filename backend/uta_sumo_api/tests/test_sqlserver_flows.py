@@ -11,10 +11,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import main
+import routers.competition as competition_router
 import routers.payments as payments_router
 import routers.auth as auth_router
+import app.services.registration_delivery as registration_delivery
 from app.core.security import create_access_token, hash_password
-from app.core.crypto import email_lookup_hash, encrypt_text
+from app.core.crypto import decrypt_text, email_lookup_hash, encrypt_text
 from database import engine, get_db
 
 
@@ -46,6 +48,11 @@ def sql_api(monkeypatch, tmp_path):
         INSERT INTO dbo.Tariffs(EventId,CategoryId,Amount,ValidFrom,ValidUntil,IsActive)
         VALUES (:event,:category,CAST(12.50 AS DECIMAL(10,2)),:start,NULL,1)
     """), {"event": event_id, "category": category_id, "start": date(2020,1,1)})
+    db.execute(text("""
+        INSERT INTO dbo.EventCategories(EventId,CategoryId,MinParticipants,MaxParticipants,
+          MinCoaches,MaxCoaches)
+        VALUES (:event,:category,1,30,0,30)
+    """), {"event": event_id, "category": category_id})
     db.commit()
 
     def override_db():
@@ -54,6 +61,10 @@ def sql_api(monkeypatch, tmp_path):
     main.app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(payments_router, "RECEIPT_STORAGE_DIR", tmp_path)
     monkeypatch.setattr(auth_router, "EMAIL_CHECK_DELIVERABILITY", False)
+    # SQL integration tests must never use a developer's configured SMTP
+    # account. Individual delivery tests can replace these with a fake server.
+    monkeypatch.setattr(registration_delivery, "SMTP_HOST", "")
+    monkeypatch.setattr(registration_delivery, "SMTP_FROM_EMAIL", "")
     clients = TestClient(main.app)
     clients.__enter__()
     try:
@@ -244,6 +255,36 @@ def test_three_member_roster_orders_and_mine_queries_persist_without_adding_owne
     assert client.get(f"/api/v1/payments/{detail['payment_id']}", headers=other_token).status_code == 404
 
 
+def test_event_category_roster_rules_are_configurable_and_enforced(sql_api):
+    ctx = sql_api
+    admin = _account(ctx, "ADMIN")
+    rules = {
+        "is_active": True, "min_participants": 2, "max_participants": 3,
+        "min_coaches": 1, "max_coaches": 1, "max_registrations": 10,
+    }
+    configured = ctx["client"].put(
+        f"/api/v1/admin/events/{ctx['event_id']}/categories/{ctx['category_id']}",
+        headers=admin["headers"], json=rules,
+    )
+    assert configured.status_code == 200, configured.text
+    public = ctx["client"].get(f"/api/v1/events/{ctx['event_id']}/categories")
+    assert public.status_code == 200
+    assert public.json()[0]["min_participants"] == 2
+    assert public.json()[0]["max_registrations"] == 10
+
+    participant = _register(ctx, f"configured_{uuid.uuid4().hex[:8]}")
+    token = {"Authorization": f"Bearer {participant['access_token']}"}
+    _profile, team, robot = _owned_resources(ctx, token)
+    one_member = ctx["client"].post("/api/v1/registrations", headers=token, json={
+        "event_id": ctx["event_id"], "category_id": ctx["category_id"],
+        "team_id": team["id"], "robot_id": robot["id"],
+        "participants": [{"role": "PARTICIPANT", "first_name": "Only",
+            "last_name": "Member", "institution_id": ctx["institution_id"],
+            "mobile_phone": None}],
+    })
+    assert one_member.status_code == 422
+
+
 
 
 def test_catalog_admin_permissions_and_role_management(sql_api):
@@ -326,9 +367,12 @@ def test_catalog_admin_permissions_and_role_management(sql_api):
                                 headers=admin["headers"], json={"is_active": False}).status_code == 409
 
 
-def test_payment_receipt_review_history_and_state_transitions(sql_api):
+def test_payment_receipt_review_history_and_state_transitions(sql_api, monkeypatch):
     ctx = sql_api
     client = ctx["client"]
+    # Keep integration tests isolated from external SMTP while validating the
+    # durable outbox entry created by receipt submission.
+    monkeypatch.setattr(payments_router, "deliver_outbox", lambda _db, _id: "PENDING")
     participant = _register(ctx, f"payer_{uuid.uuid4().hex[:8]}")
     token = {"Authorization": f"Bearer {participant['access_token']}"}
     registration = _create_registration(ctx, token)
@@ -355,6 +399,14 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api):
                             data={"payment_reference": "bank-transfer-test"},
                             files={"file": ("proof.pdf", b"%PDF-1.7\nmock evidence", "application/pdf")})
     assert submitted.status_code == 202, submitted.text
+    assert submitted.json()["notification_status"] == "PENDING"
+    proof_email = ctx["db"].execute(text("""
+        SELECT MessageType,RecipientCiphertext,Subject,BodyText FROM dbo.EmailOutbox
+        WHERE RegistrationId=:id AND MessageType LIKE 'PAYMENT_PROOF_%'
+    """), {"id": registration["id"]}).one()
+    assert proof_email[0].startswith("PAYMENT_PROOF_")
+    assert all(value.startswith("enc:v1:") for value in proof_email[1:])
+    assert "Recibimos el comprobante" in decrypt_text(proof_email[3])
     stored_receipt = ctx["db"].execute(text("""
         SELECT pr.EncryptionVersion,pr.StorageKey,p.PaymentReference
         FROM dbo.PaymentReceipts pr JOIN dbo.Payments p ON p.PaymentId=pr.PaymentId
@@ -635,6 +687,59 @@ def test_live_scoring_is_auditable_role_protected_and_idempotent(sql_api):
     assert staff_audit.status_code == 200 and staff_audit.json()["items"][0]["actor_user_id"] == manager["user_id"]
     assert client.post(url, headers={**manager["headers"], "Idempotency-Key": str(uuid.uuid4())},
                        json={**payload, "points_delta": -100}).status_code == 422
+
+
+def test_current_combat_http_websocket_flow_persists_and_broadcasts(sql_api, monkeypatch):
+    ctx = sql_api
+    client = ctx["client"]
+    registrations = []
+    for index in range(2):
+        participant = _register(ctx, f"combat_{index}_{uuid.uuid4().hex[:8]}")
+        registration = _create_registration(ctx, {
+            "Authorization": f"Bearer {participant['access_token']}"})
+        ctx["db"].execute(text("""
+            UPDATE dbo.Registrations
+            SET StatusId=(SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='APPROVED')
+            WHERE RegistrationId=:id
+        """), {"id": registration["id"]})
+        ctx["db"].commit()
+        registrations.append(registration)
+
+    staff = _account(ctx, "EVENT_MANAGER")
+    round_response = client.post(f"/api/v1/events/{ctx['event_id']}/rounds",
+        headers=staff["headers"], json={"category_id": ctx["category_id"],
+        "round_number": 1, "name": "Ronda marcador"})
+    assert round_response.status_code == 201, round_response.text
+    match_response = client.post(f"/api/v1/events/{ctx['event_id']}/matches",
+        headers=staff["headers"], json={"round_id": round_response.json()["id"],
+        "match_number": 1,
+        "team_ids": [item["team_id"] for item in registrations],
+        "robot_ids": [item["robot_id"] for item in registrations]})
+    assert match_response.status_code == 201, match_response.text
+
+    # Use the fixture's outer transaction so this E2E test leaves no rows behind.
+    from sqlalchemy.orm import Session as SqlSession
+    connection = ctx["db"].connection()
+    monkeypatch.setattr(competition_router, "SessionLocal", lambda: SqlSession(
+        bind=connection, join_transaction_mode="create_savepoint"))
+    with client.websocket_connect("/ws/combate-actual") as socket:
+        initial = socket.receive_json()
+        assert initial["estado_code"] == "SIN_COMBATE_ACTIVO"
+        update = client.put("/api/v1/competition/combate-actual",
+            headers=staff["headers"], json={
+                "match_id": match_response.json()["match_id"],
+                "estado": "En combate",
+                "robotA": {"puntos": 2}, "robotB": {"puntos": 1},
+                "detalles": "Ronda inicial", "motivo": "Marcador confirmado por juez",
+            })
+        assert update.status_code == 200, update.text
+        response = update.json()
+        assert response["estado"] == "En combate"
+        assert response["robotA"]["puntos"] == 2
+        assert response["robotB"]["puntos"] == 1
+        assert response["detalles"] == "Ronda inicial"
+        pushed = socket.receive_json()
+        assert pushed == response
 
 
 def test_registration_rolls_back_every_row_when_payment_insert_fails(sql_api, monkeypatch):

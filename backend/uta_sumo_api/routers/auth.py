@@ -144,8 +144,7 @@ def google_login(payload: GoogleAuthRequest, db: Session = Depends(get_db)):
         existing = find_user_for_login(db, email)
         if existing:
             raise HTTPException(status_code=409, detail=(
-                "Ya existe una cuenta con ese correo. Inicia sesión con ella y vincula Google "
-                "desde una sesión autenticada."
+                "Ya existe una cuenta con ese correo. Inicia sesión o recupera tu contraseña."
             ))
         if payload.institution_id is None:
             raise HTTPException(status_code=422, detail="Selecciona una institución para crear tu perfil.")

@@ -34,7 +34,7 @@ ACCOUNTS = (
 )
 INSTITUTION = "UTA SUMO DEMO LOCAL"
 EVENT = "UTA SUMO DEMO LOCAL"
-CATEGORY = "MINI SUMO RC AMATEUR"
+CATEGORY = "MINI SUMO AMATEUR RC"
 COLLECTION = API_DIR / "postman/UTA_Sumo_E2E.postman_collection.json"
 
 
@@ -137,7 +137,7 @@ def main() -> None:
         if tariff_id is None:
             tariff_id = db.execute(text("""
                 INSERT INTO dbo.Tariffs(EventId,CategoryId,Amount,ValidFrom,ValidUntil,IsActive)
-                OUTPUT INSERTED.TariffId VALUES (:event,:category,25.00,'2020-01-01','2099-12-31',1)
+                OUTPUT INSERTED.TariffId VALUES (:event,:category,15.00,'2020-01-01','2099-12-31',1)
             """), {"event": event_id, "category": category_id}).scalar_one()
 
         participant_id = db.execute(text("""

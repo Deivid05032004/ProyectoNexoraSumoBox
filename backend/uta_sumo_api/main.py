@@ -20,6 +20,7 @@ from routers.registration_config import router as registration_config_router
 from routers.delivery_admin import router as delivery_admin_router
 from routers.admin_registrations import router as admin_registrations_router
 from routers.regulations import router as regulations_router
+from routers.event_categories import router as event_categories_router
 class ReceiptUploadSizeLimit:
     """Bound receipt bodies even when clients omit Content-Length or use chunks."""
 
@@ -131,6 +132,7 @@ app.include_router(registration_config_router)
 app.include_router(delivery_admin_router)
 app.include_router(admin_registrations_router)
 app.include_router(regulations_router)
+app.include_router(event_categories_router)
 
 @app.get("/")
 def inicio():

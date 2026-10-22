@@ -46,6 +46,10 @@ MIGRATIONS = [
     ROOT / "database/scripts/18_event_regulations.sql",
     ROOT / "database/scripts/19_current_combat.sql",
     ROOT / "database/scripts/20_match_team_robot.sql",
+    ROOT / "database/scripts/21_uta_sumo_robotics_cup_2026.sql",
+    ROOT / "database/scripts/22_event_category_rules.sql",
+    ROOT / "database/scripts/23_official_event_category_rules.sql",
+    ROOT / "database/scripts/24_combat_public_details.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",
