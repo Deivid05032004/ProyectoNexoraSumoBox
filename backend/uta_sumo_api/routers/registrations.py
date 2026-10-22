@@ -98,9 +98,6 @@ def create_registration(payload: RegistrationCreate,
     participant_ids = [p.participant_id for p in payload.participants if p.participant_id is not None]
     if len(set(participant_ids)) != len(participant_ids):
         raise HTTPException(status_code=422, detail="No repita participantes en la inscripción.")
-    if len(payload.participants) == 3 and sum(p.role == "PARTICIPANT" for p in payload.participants) != 2:
-        raise HTTPException(status_code=422, detail="La inscripción requiere dos participantes y un coach.")
-
     team = db.execute(text("SELECT InstitutionId FROM dbo.Teams WHERE TeamId=:id AND OwnerUserId=:owner"),
                       {"id": payload.team_id, "owner": user["user_id"]}).scalar_one_or_none()
     if team is None:
@@ -125,11 +122,14 @@ def create_registration(payload: RegistrationCreate,
             raise HTTPException(status_code=403, detail="Solo puede asociar participantes vinculados explícitamente a su cuenta.")
 
     valid = db.execute(text("""
-        SELECT TOP (1) e.EventId,e.Name AS EventName,t.TariffId,t.Amount,
+        SELECT TOP (1) e.EventId,e.Name AS EventName,c.Name AS CategoryName,t.TariffId,t.Amount,
+          ec.MinParticipants,ec.MaxParticipants,ec.MinCoaches,ec.MaxCoaches,ec.MaxRegistrations,
           cfg.IsEnabled AS RegistrationEnabled,cfg.OrganizationName,cfg.FormInstructions,
           cfg.PaymentInstructions,cfg.PaymentMethodsJson,cfg.ContactEmail,cfg.ContactPhone,
           cfg.ReceiptMessage,cfg.Currency,cfg.FormTitle
         FROM dbo.Events e JOIN dbo.Categories c ON c.CategoryId=:category AND c.IsActive=1
+        JOIN dbo.EventCategories ec WITH (UPDLOCK,HOLDLOCK)
+          ON ec.EventId=e.EventId AND ec.CategoryId=c.CategoryId AND ec.IsActive=1
         JOIN dbo.Tariffs t ON t.EventId=e.EventId AND t.CategoryId=c.CategoryId
         LEFT JOIN dbo.EventRegistrationConfigs cfg ON cfg.EventId=e.EventId
         WHERE e.EventId=:event AND e.IsActive=1
@@ -143,6 +143,24 @@ def create_registration(payload: RegistrationCreate,
         raise HTTPException(status_code=422, detail="Evento/categoría/tarifa no disponible para inscripción.")
     if valid["RegistrationEnabled"] is False:
         raise HTTPException(status_code=409, detail="Las inscripciones de este evento están deshabilitadas.")
+    participant_count = sum(person.role == "PARTICIPANT" for person in payload.participants)
+    coach_count = sum(person.role == "COACH" for person in payload.participants)
+    if not valid["MinParticipants"] <= participant_count <= valid["MaxParticipants"]:
+        raise HTTPException(status_code=422, detail=(
+            f"La categoría requiere entre {valid['MinParticipants']} y "
+            f"{valid['MaxParticipants']} participantes."
+        ))
+    if not valid["MinCoaches"] <= coach_count <= valid["MaxCoaches"]:
+        raise HTTPException(status_code=422, detail=(
+            f"La categoría permite entre {valid['MinCoaches']} y {valid['MaxCoaches']} coaches."
+        ))
+    if valid["MaxRegistrations"] is not None:
+        registrations_count = db.execute(text("""
+            SELECT COUNT_BIG(*) FROM dbo.Registrations WITH (UPDLOCK,HOLDLOCK)
+            WHERE EventId=:event AND CategoryId=:category
+        """), {"event": payload.event_id, "category": payload.category_id}).scalar_one()
+        if registrations_count >= valid["MaxRegistrations"]:
+            raise HTTPException(status_code=409, detail="La categoría alcanzó su cupo de inscripciones.")
 
     initial_status = db.execute(text("SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='PAYMENT_PENDING'")).scalar_one_or_none()
     if initial_status is None:

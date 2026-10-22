@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
@@ -23,6 +23,23 @@ class EventInput(StrictModel):
     registration_start: date | None = None
     registration_end: date | None = None
     is_active: bool = True
+
+
+class EventCategoryRulesInput(StrictModel):
+    is_active: bool = True
+    min_participants: int = Field(default=1, ge=1, le=30)
+    max_participants: int = Field(default=30, ge=1, le=30)
+    min_coaches: int = Field(default=0, ge=0, le=30)
+    max_coaches: int = Field(default=30, ge=0, le=30)
+    max_registrations: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        if self.min_participants > self.max_participants:
+            raise ValueError("min_participants no puede superar max_participants.")
+        if self.min_coaches > self.max_coaches:
+            raise ValueError("min_coaches no puede superar max_coaches.")
+        return self
 
 
 class TariffInput(StrictModel):

@@ -27,25 +27,45 @@ def test_registration_roster_accepts_three_explicit_members_and_legacy_client():
     assert legacy.participants[0].participant_id == 7
 
 
-def test_registration_roster_rejects_incomplete_or_misordered_members():
+def test_registration_roster_accepts_two_members_for_amateur_regulation():
     from app.schemas.registration import RegistrationCreate
 
-    common = {"event_id": 1, "category_id": 1, "team_id": 1, "robot_id": 1}
-    incomplete = [{"role": "PARTICIPANT", "first_name": "Ada", "last_name": "Uno",
-                   "institution_id": 1, "mobile_phone": None}]
-    with pytest.raises(ValidationError):
-        RegistrationCreate(**common, participants=incomplete)
-
-    wrong_order = [
+    roster = RegistrationCreate(event_id=1, category_id=1, team_id=1, robot_id=1, participants=[
         {"role": "PARTICIPANT", "first_name": "Ada", "last_name": "Uno",
-         "institution_id": 1, "mobile_phone": None},
-        {"role": "COACH", "first_name": "Grace", "last_name": "Coach",
          "institution_id": 1, "mobile_phone": None},
         {"role": "PARTICIPANT", "first_name": "Lin", "last_name": "Dos",
          "institution_id": 1, "mobile_phone": None},
+    ])
+    assert [member.role for member in roster.participants] == ["PARTICIPANT", "PARTICIPANT"]
+
+
+def test_registration_roster_is_not_hard_limited_to_three_positions():
+    from app.schemas.registration import RegistrationCreate
+
+    common = {"event_id": 1, "category_id": 1, "team_id": 1, "robot_id": 1}
+    roster = [
+        {"role": "PARTICIPANT", "first_name": f"Member{i}", "last_name": "Test",
+         "institution_id": 1, "mobile_phone": None}
+        for i in range(1, 5)
+    ] + [
+        {"role": "COACH", "first_name": "Coach", "last_name": "Test",
+         "institution_id": 1, "mobile_phone": None}
     ]
+    payload = RegistrationCreate(**common, participants=roster)
+    assert len(payload.participants) == 5
+
     with pytest.raises(ValidationError):
-        RegistrationCreate(**common, participants=wrong_order)
+        RegistrationCreate(**common, participants=[{
+            "role": "COACH", "first_name": "Coach", "last_name": "Test",
+            "institution_id": 1, "mobile_phone": None,
+        }])
+
+
+def test_event_category_rules_reject_inconsistent_limits():
+    from app.schemas.resources import EventCategoryRulesInput
+
+    with pytest.raises(ValidationError):
+        EventCategoryRulesInput(min_participants=3, max_participants=2)
 
 
 def test_password_hash_round_trip_and_not_plaintext():
