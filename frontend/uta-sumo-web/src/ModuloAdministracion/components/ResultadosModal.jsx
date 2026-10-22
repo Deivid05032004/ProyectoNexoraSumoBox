@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   obtenerResultadosTorneo,
   guardarResultadosTorneo,
@@ -7,23 +7,108 @@ import {
 } from '../../ModuloResultados/services/resultadosApi';
 import './ResultadosModal.css';
 
+/**
+ * Tiempo de debounce (ms) para publicar cambios de texto mientras el admin escribe.
+ * Los steppers de puntos y el ganador publican de forma inmediata.
+ */
+const DEBOUNCE_PUBLICAR_MS = 700;
+
 export default function ResultadosModal({ isOpen, onClose }) {
   const [combate, setCombate] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [notificacion, setNotificacion] = useState('');
+  const [indicadorSync, setIndicadorSync] = useState(''); // '' | 'sincronizando' | 'ok'
+
+  const debounceTimerRef = useRef(null);
 
   useEffect(() => {
     if (!isOpen) return;
     async function cargar() {
       const res = await obtenerResultadosTorneo();
-      setCombate(JSON.parse(JSON.stringify(res))); // Copia profunda para editar
+      setCombate(JSON.parse(JSON.stringify(res)));
     }
     cargar();
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
   }, [isOpen]);
 
   if (!isOpen || !combate) return null;
 
-  // Selección rápida de robot oficial desde combo box
+  // ─── PUBLICACIÓN EN TIEMPO REAL ─────────────────────────────────────────
+  /**
+   * Publica el combate al BroadcastChannel e localStorage.
+   * - inmediato=true  → sin debounce (steppers, ganador, estado)
+   * - inmediato=false → con debounce (campos de texto mientras se escribe)
+   */
+  // ─── PUBLICACIÓN EN TIEMPO REAL AL BACKEND ────────────────────────────────
+
+const publicarEnVivo = useCallback((datosCombate, inmediato = false) => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+
+    const ejecutar = async () => {
+      setIndicadorSync('sincronizando');
+      try {
+        const token = sessionStorage.getItem('adminToken'); // O donde guardes tu token
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/competition/combate-actual`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(datosCombate)
+        });
+
+        if (response.ok) {
+          setIndicadorSync('ok');
+          setTimeout(() => setIndicadorSync(''), 1400);
+        }
+      } catch (error) {
+        console.error("Error al sincronizar en vivo:", error);
+        setIndicadorSync('');
+      }
+    };
+
+    if (inmediato) {
+      ejecutar();
+    } else {
+      debounceTimerRef.current = setTimeout(ejecutar, DEBOUNCE_PUBLICAR_MS);
+    }
+  }, []);
+
+  // Botón explícito: cancela debounce, publica una última vez y cierra
+  const handleGuardar = async (e) => {
+    e?.preventDefault();
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    setGuardando(true);
+    try {
+      const token = sessionStorage.getItem('adminToken');
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/competition/combate-actual`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(combate)
+      });
+      
+      if (!response.ok) throw new Error('Error guardando en backend');
+
+      setNotificacion('¡Combate publicado en pantalla gigante con éxito!');
+      setTimeout(() => {
+        setNotificacion('');
+        onClose();
+      }, 900);
+    } catch (error) {
+      console.error("Error al guardar:", error);
+      setNotificacion('Error al guardar el combate en el servidor.');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  // ─── MANEJADORES ────────────────────────────────────────────────────────
+
   const handleQuickSelectRobot = (lado, robotNombre) => {
     const encontrado = LISTA_EQUIPOS_OFICIALES.find((e) => e.nombre === robotNombre) || EQUIPO_POR_DEFINIR;
     setCombate((prev) => {
@@ -33,8 +118,6 @@ export default function ResultadosModal({ isOpen, onClose }) {
         nombre: encontrado.nombre,
         institucion: encontrado.institucion,
       };
-
-      // Si el ganador anterior ya no coincide, volver a 'No definido'
       if (
         copia.ganador &&
         copia.ganador !== 'No definido' &&
@@ -44,55 +127,53 @@ export default function ResultadosModal({ isOpen, onClose }) {
       ) {
         copia.ganador = 'No definido';
       }
-
+      publicarEnVivo(copia);
       return copia;
     });
   };
 
-  // Edición directa de campos de texto de los robots
+  // Campos de texto: debounce para no publicar en cada tecla
   const handleRobotFieldChange = (lado, campo, valor) => {
-    setCombate((prev) => ({
-      ...prev,
-      [lado]: {
-        ...prev[lado],
-        [campo]: valor,
-      },
-    }));
-  };
-
-  // Cambio de puntuación con botones stepper (+ / -)
-  const handlePuntosChange = (lado, delta) => {
     setCombate((prev) => {
-      const actual = prev[lado].puntos || 0;
-      const nuevo = Math.max(0, actual + delta);
-      return {
-        ...prev,
-        [lado]: {
-          ...prev[lado],
-          puntos: nuevo,
-        },
-      };
+      const nuevo = { ...prev, [lado]: { ...prev[lado], [campo]: valor } };
+      publicarEnVivo(nuevo); // con debounce
+      return nuevo;
     });
   };
 
-  // Guardar y transmitir a la pantalla gigante
-  const handleGuardar = async (e) => {
-    e?.preventDefault();
-    setGuardando(true);
-    try {
-      await guardarResultadosTorneo(combate);
-      setNotificacion('¡Combate actualizado y proyectado en pantalla gigante con éxito!');
-      setTimeout(() => {
-        setNotificacion('');
-        onClose();
-      }, 1000);
-    } catch {
-      setNotificacion('Error al guardar el combate.');
-    } finally {
-      setGuardando(false);
-    }
+  // Steppers de puntos: publicación INMEDIATA (el juez necesita ver el marcador al instante)
+  const handlePuntosChange = (lado, delta) => {
+    setCombate((prev) => {
+      const nuevo = Math.max(0, (prev[lado].puntos || 0) + delta);
+      const actualizado = { ...prev, [lado]: { ...prev[lado], puntos: nuevo } };
+      publicarEnVivo(actualizado, true); // inmediato
+      return actualizado;
+    });
   };
 
+  // Estado del combate: publicación inmediata
+  const handleEstadoChange = (nuevoEstado) => {
+    setCombate((prev) => {
+      const nuevo = { ...prev, estado: nuevoEstado };
+      publicarEnVivo(nuevo, true);
+      return nuevo;
+    });
+  };
+
+  // Ganador: publicación inmediata (dispara animación de victoria en /resultados)
+  const handleGanadorChange = (nuevoGanador) => {
+    setCombate((prev) => {
+      const nuevo = {
+        ...prev,
+        ganador: nuevoGanador,
+        estado: nuevoGanador && nuevoGanador !== 'No definido' ? 'Finalizado' : prev.estado,
+      };
+      publicarEnVivo(nuevo, true);
+      return nuevo;
+    });
+  };
+
+  
   const opcionesGanador = [
     'No definido',
     combate.robotA.nombre,
