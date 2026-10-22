@@ -247,6 +247,11 @@ La política de datos está en [backend-security-and-migrations.md](../../docs/b
 
 ## Configuración, PDF y entrega de correo
 
+La guía para el equipo frontend está en
+[GUIA_FRONTEND_CORREO.md](../../docs/backend/GUIA_FRONTEND_CORREO.md); describe
+los estados que debe mostrar y confirma que las credenciales SMTP son privadas
+del backend.
+
 La migración aditiva `database/scripts/14_registration_delivery.sql` conserva
 los datos actuales, añade la moneda histórica a cada pago y crea la configuración
 por evento, el archivo privado del recibo, el historial de configuración y el

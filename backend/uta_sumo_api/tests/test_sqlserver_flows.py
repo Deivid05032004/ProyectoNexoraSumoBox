@@ -14,7 +14,7 @@ import main
 import routers.payments as payments_router
 import routers.auth as auth_router
 from app.core.security import create_access_token, hash_password
-from app.core.crypto import email_lookup_hash, encrypt_text
+from app.core.crypto import decrypt_text, email_lookup_hash, encrypt_text
 from database import engine, get_db
 
 
@@ -326,9 +326,12 @@ def test_catalog_admin_permissions_and_role_management(sql_api):
                                 headers=admin["headers"], json={"is_active": False}).status_code == 409
 
 
-def test_payment_receipt_review_history_and_state_transitions(sql_api):
+def test_payment_receipt_review_history_and_state_transitions(sql_api, monkeypatch):
     ctx = sql_api
     client = ctx["client"]
+    # Keep integration tests isolated from external SMTP while validating the
+    # durable outbox entry created by receipt submission.
+    monkeypatch.setattr(payments_router, "deliver_outbox", lambda _db, _id: "PENDING")
     participant = _register(ctx, f"payer_{uuid.uuid4().hex[:8]}")
     token = {"Authorization": f"Bearer {participant['access_token']}"}
     registration = _create_registration(ctx, token)
@@ -355,6 +358,14 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api):
                             data={"payment_reference": "bank-transfer-test"},
                             files={"file": ("proof.pdf", b"%PDF-1.7\nmock evidence", "application/pdf")})
     assert submitted.status_code == 202, submitted.text
+    assert submitted.json()["notification_status"] == "PENDING"
+    proof_email = ctx["db"].execute(text("""
+        SELECT MessageType,RecipientCiphertext,Subject,BodyText FROM dbo.EmailOutbox
+        WHERE RegistrationId=:id AND MessageType LIKE 'PAYMENT_PROOF_%'
+    """), {"id": registration["id"]}).one()
+    assert proof_email[0].startswith("PAYMENT_PROOF_")
+    assert all(value.startswith("enc:v1:") for value in proof_email[1:])
+    assert "Recibimos el comprobante" in decrypt_text(proof_email[3])
     stored_receipt = ctx["db"].execute(text("""
         SELECT pr.EncryptionVersion,pr.StorageKey,p.PaymentReference
         FROM dbo.PaymentReceipts pr JOIN dbo.Payments p ON p.PaymentId=pr.PaymentId

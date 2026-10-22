@@ -193,13 +193,49 @@ async def submit_receipt(payment_id: int, file: UploadFile = File(...),
         registration_id = payment["registration_id"]
         change_registration_status(db, registration_id, "PAYMENT_REVIEW", user["user_id"],
                                   "Comprobante presentado; pendiente de revisión de tesorería")
+        # Queue an encrypted confirmation in the same transaction as the receipt
+        # and state change. The uploaded bank document is deliberately not emailed.
+        notification = db.execute(text("""
+            SELECT u.EmailCiphertext,u.FirstName,e.Name AS event_name,
+                   CONVERT(varchar(36),r.RegistrationCode) AS registration_code
+            FROM dbo.Registrations r
+            JOIN dbo.Users u ON u.UserId=r.CreatedByUserId
+            JOIN dbo.Events e ON e.EventId=r.EventId
+            WHERE r.RegistrationId=:registration
+        """), {"registration": registration_id}).mappings().one()
+        participant_name = decrypt_text(notification["FirstName"])
+        event_name = notification["event_name"]
+        message_type = f"PAYMENT_PROOF_{uuid4().hex[:23]}"
+        outbox_id = db.execute(text("""
+            INSERT INTO dbo.EmailOutbox(RegistrationId,MessageType,RecipientCiphertext,Subject,BodyText)
+            OUTPUT INSERTED.OutboxId
+            VALUES(:registration,:message_type,:recipient,:subject,:body)
+        """), {
+            "registration": registration_id,
+            "message_type": message_type,
+            "recipient": notification["EmailCiphertext"],
+            "subject": encrypt_text(f"Comprobante recibido — {event_name}"),
+            "body": encrypt_text(
+                f"Hola {participant_name},\n\n"
+                f"Recibimos el comprobante de pago de tu inscripción "
+                f"{notification['registration_code']} para {event_name}.\n"
+                "El pago quedó pendiente de revisión administrativa. Te notificaremos "
+                "cuando sea aprobado o si necesitas corregir el comprobante.\n"
+            ),
+        }).scalar_one()
         db.commit()
     except Exception:
         db.rollback()
         staging.unlink(missing_ok=True)
         target.unlink(missing_ok=True)
         raise
-    return {"payment_id": payment_id, "status": "IN_REVIEW", "receipt_uploaded": True}
+    try:
+        notification_status = deliver_outbox(db, outbox_id)
+    except SQLAlchemyError:
+        db.rollback()
+        notification_status = "PENDING"
+    return {"payment_id": payment_id, "status": "IN_REVIEW", "receipt_uploaded": True,
+            "notification_status": notification_status}
 
 
 @router.get("/{payment_id}/receipt")
