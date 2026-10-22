@@ -5,6 +5,8 @@ import './ParticipantAccess.css';
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const GOOGLE_SCRIPT = 'https://accounts.google.com/gsi/client';
+let initializedGoogleClientId = '';
+let googleCredentialHandler = null;
 
 async function responseMessage(response) {
   const body = await response.json().catch(() => ({}));
@@ -72,18 +74,21 @@ export default function ParticipantAccess({ initialMode = 'login' }) {
 
   useEffect(() => {
     if (!googleReady || !GOOGLE_CLIENT_ID || !googleButton.current) return;
-    window.google.accounts.id.initialize({
-      client_id: GOOGLE_CLIENT_ID,
-      callback: ({ credential }) => signInWithGoogle(credential),
-      auto_select: false,
-      cancel_on_tap_outside: true,
-    });
+    if (initializedGoogleClientId !== GOOGLE_CLIENT_ID) {
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: ({ credential }) => googleCredentialHandler?.(credential),
+        auto_select: false,
+        cancel_on_tap_outside: true,
+      });
+      initializedGoogleClientId = GOOGLE_CLIENT_ID;
+    }
     googleButton.current.replaceChildren();
     window.google.accounts.id.renderButton(googleButton.current, {
       theme: 'outline', size: 'large', text: 'continue_with', shape: 'rectangular',
       width: Math.min(360, googleButton.current.clientWidth || 320),
     });
-  }, [googleReady, institutionId, mode]);
+  }, [googleReady]);
 
   async function saveSession(response) {
     const body = await response.json().catch(() => ({}));
@@ -121,6 +126,8 @@ export default function ParticipantAccess({ initialMode = 'login' }) {
       setBusy(false);
     }
   }
+
+  googleCredentialHandler = signInWithGoogle;
 
   async function handleSubmit(event) {
     event.preventDefault(); setError(''); setNotice('');
