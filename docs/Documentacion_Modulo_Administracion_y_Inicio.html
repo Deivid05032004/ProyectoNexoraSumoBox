@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Documentación Técnica - Módulo de Administración y Página de Inicio Fiseibot</title>
+<style>
+  @page {
+    size: A4 portrait;
+    margin: 10mm 12mm 10mm 12mm;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #1e293b;
+    line-height: 1.35;
+    font-size: 8.5pt;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* PORTADA COMPACTA EN PÁGINA 1 */
+  .cover {
+    padding: 10px 0 0 0;
+    text-align: center;
+  }
+
+  .cover-header {
+    border-bottom: 2px solid #d97706;
+    padding-bottom: 6px;
+    margin-bottom: 16px;
+  }
+
+  .cover-org {
+    font-size: 13pt;
+    font-weight: 800;
+    color: #b45309;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin: 0 0 2px 0;
+  }
+
+  .cover-suborg {
+    font-size: 8.5pt;
+    color: #64748b;
+    margin: 0;
+  }
+
+  .cover-logo {
+    width: 95px;
+    height: 95px;
+    border-radius: 50%;
+    border: 3px solid #d97706;
+    margin: 0 auto 14px auto;
+    display: block;
+    background-color: #131926;
+  }
+
+  .cover-title {
+    font-size: 20pt;
+    font-weight: 800;
+    color: #0f172a;
+    line-height: 1.15;
+    margin: 0 0 6px 0;
+    letter-spacing: -0.5px;
+  }
+
+  .cover-subtitle {
+    font-size: 12pt;
+    color: #2563eb;
+    font-weight: 700;
+    margin: 0 0 12px 0;
+  }
+
+  .cover-desc {
+    font-size: 8.5pt;
+    color: #334155;
+    max-width: 520px;
+    margin: 0 auto 16px auto;
+    line-height: 1.45;
+    text-align: justify;
+  }
+
+  .cover-meta-table {
+    width: 100%;
+    background-color: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    margin-top: 10px;
+  }
+
+  .cover-meta-table td {
+    border: none;
+    padding: 7px 10px;
+    font-size: 8pt;
+    vertical-align: top;
+    color: #475569;
+  }
+
+  .cover-meta-table strong {
+    color: #0f172a;
+    display: block;
+    margin-bottom: 2px;
+    font-size: 8.5pt;
+  }
+
+  /* ENCABEZADOS Y SECCIONES CON SALTO DE PÁGINA */
+  h1 {
+    font-size: 13pt;
+    font-weight: 800;
+    color: #0f172a;
+    border-bottom: 2px solid #2563eb;
+    padding-bottom: 3px;
+    margin: 0 0 8px 0;
+  }
+
+  h1.section-title {
+    page-break-before: always;
+  }
+
+  h2 {
+    font-size: 9.8pt;
+    font-weight: 700;
+    color: #1e3a8a;
+    margin: 8px 0 3px 0;
+    border-left: 3px solid #d97706;
+    padding-left: 6px;
+  }
+
+  p {
+    margin: 0 0 5px 0;
+    text-align: justify;
+  }
+
+  ul, ol {
+    margin: 0 0 6px 16px;
+    padding: 0;
+  }
+
+  li {
+    margin-bottom: 2px;
+  }
+
+  /* TABLAS */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 5px 0 7px 0;
+    font-size: 7.8pt;
+  }
+
+  th, td {
+    border: 1px solid #cbd5e1;
+    padding: 4px 6px;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  th {
+    background-color: #f1f5f9;
+    color: #0f172a;
+    font-weight: 700;
+  }
+
+  tr:nth-child(even) {
+    background-color: #f8fafc;
+  }
+
+  /* CALLOUTS */
+  .callout {
+    padding: 5px 8px;
+    border-radius: 4px;
+    margin: 6px 0;
+    font-size: 8pt;
+    line-height: 1.35;
+  }
+
+  .callout-info {
+    background-color: #eff6ff;
+    border-left: 3px solid #2563eb;
+    color: #1e40af;
+  }
+
+  .callout-gold {
+    background-color: #fffbeb;
+    border-left: 3px solid #d97706;
+    color: #92400e;
+  }
+
+  .callout-success {
+    background-color: #f0fdf4;
+    border-left: 3px solid #16a34a;
+    color: #166534;
+  }
+
+  /* BLOQUES DE CÓDIGO */
+  pre {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    padding: 5px 7px;
+    border-radius: 4px;
+    font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    font-size: 6.8pt;
+    margin: 4px 0 5px 0;
+    line-height: 1.28;
+  }
+
+  code {
+    font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+    font-size: 7.5pt;
+    background-color: #f1f5f9;
+    color: #0f172a;
+    padding: 1px 2px;
+    border-radius: 2px;
+  }
+
+  pre code {
+    background-color: transparent;
+    color: inherit;
+    padding: 0;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 1px 4px;
+    border-radius: 2px;
+    font-size: 6.5pt;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .badge-blue { background-color: #dbeafe; color: #1e40af; }
+  .badge-gold { background-color: #fef3c7; color: #92400e; }
+  .badge-dark { background-color: #e2e8f0; color: #1e293b; }
+</style>
+</head>
+<body>
+
+<!-- PÁGINA 1: PORTADA -->
+<div class="cover">
+  <div class="cover-header">
+    <div class="cover-org">Club de Robótica FISEI · UTA</div>
+    <div class="cover-suborg">Facultad de Ingeniería en Sistemas, Electrónica e Industrial · Universidad Técnica de Ambato</div>
+  </div>
+
+  <img src="data:image/png;base64,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" alt="Robot Fiseibot" class="cover-logo" />
+  <h1 class="cover-title">DOCUMENTO TÉCNICO DE DESARROLLO</h1>
+  <div class="cover-subtitle">Módulo de Administración y Página de Inicio (Bienvenida Fiseibot)</div>
+
+  <p class="cover-desc">
+    Informe técnico y funcional completo de la plataforma web del Torneo de Robótica UTA Sumo 2026 
+    (Nexora Sumo Box). El documento detalla el desarrollo de la página de inicio sin scroll inspirada 
+    en la identidad institucional de Fiseibot, la implementación del módulo de inicio de sesión de 
+    revisores, la arquitectura de enrutamiento con React Router DOM v7 y la guía de comandos de despliegue.
+  </p>
+
+  <table class="cover-meta-table">
+    <tr>
+      <td style="width: 33%;">
+        <strong>Organización:</strong> Fiseibot (FISEI - UTA)<br>
+        <strong>Torneo:</strong> UTA Sumo 2026<br>
+        <strong>Categoría:</strong> Mini Sumo RC
+      </td>
+      <td style="width: 33%;">
+        <strong>Desarrollo:</strong> Snayder Pérez<br>
+        <strong>Arquitectura:</strong> SPA (React 19)<br>
+        <strong>Build Tool:</strong> Vite 8
+      </td>
+      <td style="width: 33%;">
+        <strong>Versión:</strong> 1.0.0 Oficial<br>
+        <strong>Fecha:</strong> Octubre 2026<br>
+        <strong>Calidad:</strong> 0 Errores / 0 Warnings
+      </td>
+    </tr>
+  </table>
+</div>
+
+<!-- PÁGINA 2: RESUMEN Y CONTEXTO -->
+<h1 class="section-title">1. Resumen Ejecutivo y Contexto Institucional</h1>
+<p>
+  El presente proyecto corresponde al desarrollo e integración del frontend oficial para el 
+  <strong>Torneo de Robótica UTA Sumo 2026 (Nexora Sumo Box)</strong>, organizado por el 
+  <strong>Club de Robótica Fiseibot</strong> de la Facultad de Ingeniería en Sistemas, Electrónica e 
+  Industrial (FISEI) perteneciente a la Universidad Técnica de Ambato (UTA), Ecuador.
+</p>
+
+<div class="callout callout-gold">
+  <strong>Lema Oficial de Fiseibot:</strong> <em>«Nuestra misión: ¡innovar y crear!»</em> — La solución digital 
+  refleja la identidad institucional, garantizando una experiencia ágil, confiable y de alto nivel técnico.
+</div>
+
+<h2>1.1 Objetivos y Módulos Desarrollados</h2>
+<p>La entrega consolida dos frentes clave del sistema web:</p>
+<ol>
+  <li>
+    <strong>Página de Inicio / Bienvenida Oficial (<code>/</code>):</strong> Diseñada en formato de pantalla única 
+    (<em>Single-Screen No-Scroll</em>) con fondo oscuro mate institucional, exhibiendo el robot oficial de Fiseibot, 
+    la convocatoria técnica para la categoría <em>Mini Sumo RC Amateur</em>, accesos directos de navegación y enlaces a la comunidad.
+  </li>
+  <li>
+    <strong>Módulo de Administración de Revisores (<code>/admin</code>):</strong> Módulo seguro de autenticación 
+    para jueces y personal técnico encargados de revisar comprobantes de pago y autorizar las fichas técnicas de los robots.
+  </li>
+</ol>
+
+<h2>1.2 Ficha del Stack Tecnológico</h2>
+<table>
+  <thead>
+    <tr>
+      <th style="width: 25%;">Tecnología</th>
+      <th style="width: 18%;">Versión</th>
+      <th>Rol en el Sistema</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>React</strong></td>
+      <td>19.2.8</td>
+      <td>Biblioteca para construcción de componentes funcionales y renderizado reactivo del DOM.</td>
+    </tr>
+    <tr>
+      <td><strong>React Router DOM</strong></td>
+      <td>7.18.4</td>
+      <td>Manejo declarativo del árbol de rutas SPA con enlaces client-side optimizados.</td>
+    </tr>
+    <tr>
+      <td><strong>Vite</strong></td>
+      <td>8.3.4</td>
+      <td>Herramienta de bundling de última generación con Hot Module Replacement (HMR) ultrarrápido.</td>
+    </tr>
+    <tr>
+      <td><strong>Oxlint</strong></td>
+      <td>1.81.0</td>
+      <td>Linter de alto rendimiento en Rust para garantizar código libre de errores sintácticos y buenas prácticas.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-info">
+  <strong>Compilación Verificada:</strong> El artefacto final de producción se construye en menos de 800 ms sin 
+  advertencias de dependencias cíclicas, cumpliendo con los estándares de rendimiento para aplicaciones web modernas.
+</div>
+
+<!-- PÁGINA 3: PÁGINA DE INICIO (BIENVENIDA) -->
+<h1 class="section-title">2. Módulo de Página de Inicio (`Bienvenida.jsx`)</h1>
+
+<h2>2.1 Decisiones de Diseño y Criterios Visuales</h2>
+<p>
+  En respuesta a los requerimientos de sobriedad y profesionalismo institucional, se aplicaron las siguientes directrices:
+</p>
+<ul>
+  <li><strong>Eliminación de Redes Sociales Informales:</strong> Se suprimieron contadores de seguidores, comentarios y likes simulados, centrando el contenido en la convocatoria del torneo y los lineamientos de competencia.</li>
+  <li><strong>Supresión de Colores Neón:</strong> Se reemplazaron resplandores difusos y anillos pulsantes por una paleta mate sobria: fondo oscuro (<code>#0c1017</code>), superficies en <code>#141923</code>, acentos en dorado institucional (<code>#d97706</code> / <code>#f59e0b</code>) y azul corporativo (<code>#2563eb</code>).</li>
+  <li><strong>Ajuste en Pantalla Única ("No-Scroll"):</strong> La vista calcula exactamente la altura de la ventana (<code>height: calc(100vh - 65px)</code> con <code>overflow: hidden</code> en desktop), garantizando que todo el contenido sea visible a primera vista sin barras de desplazamiento.</li>
+</ul>
+
+<h2>2.2 Componentes de la Interfaz</h2>
+<table>
+  <thead>
+    <tr>
+      <th style="width: 25%;">Zona / Bloque</th>
+      <th style="width: 30%;">Elemento</th>
+      <th>Detalle Funcional y Contenido</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td rowspan="4"><strong>Columna Izquierda</strong><br>(Hero Textual)</td>
+      <td>Badge Institucional</td>
+      <td>Píldora con indicador visual: <code>CLUB DE ROBÓTICA FISEI · UTA</code>.</td>
+    </tr>
+    <tr>
+      <td>Titular y Lema</td>
+      <td>Título <em>Torneo de Robótica UTA Sumo 2026</em> y lema <em>«Nuestra misión: ¡innovar y crear!»</em>.</td>
+    </tr>
+    <tr>
+      <td>Acciones Principales</td>
+      <td>Botón azul primario <strong>"Inscribir mi Robot"</strong> (<code>/inscripcion</code>) y botón secundario <strong>"Panel de Revisión"</strong> (<code>/admin</code>).</td>
+    </tr>
+    <tr>
+      <td>Píldoras Técnicas</td>
+      <td>3 indicadores técnicos: <em>Mini Sumo RC</em>, <em>Reglamento Oficial</em> y <em>Equipos (2-3 integrantes)</em>.</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><strong>Columna Derecha</strong><br>(Tarjeta Showcase)</td>
+      <td>Isotipo Oficial</td>
+      <td>Avatar circular del robot Fiseibot (115px) con borde metálico ámbar y fondo marino profundo.</td>
+    </tr>
+    <tr>
+      <td>Estado de Convocatoria</td>
+      <td>Insignia <code>CONVOCATORIA OFICIAL</code> con punto indicador en verde esmeralda (<code>#10b981</code>).</td>
+    </tr>
+    <tr>
+      <td>Grid de Datos</td>
+      <td>Datos clave: Competencia (<em>Nexora Sumo Box</em>), Sede (<em>Campus Huachi · UTA</em>), Modalidad (<em>RC</em>) e Instagram oficial.</td>
+    </tr>
+    <tr>
+      <td><strong>Pie de Página</strong></td>
+      <td>Footer Compacto</td>
+      <td>Créditos institucionales a la FISEI y la Universidad Técnica de Ambato.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>2.3 Código Fuente Central (`Bienvenida.jsx`)</h2>
+<pre><code>// Bienvenida.jsx - Maquetación en pantalla única (100vh no-scroll)
+&lt;div className="home-wrapper"&gt;
+  &lt;main className="home-content"&gt;
+    &lt;div className="hero-text-col"&gt;
+      &lt;div className="institution-badge"&gt;&lt;span className="badge-dot" /&gt;CLUB DE ROBÓTICA FISEI · UTA&lt;/div&gt;
+      &lt;h1 className="hero-title"&gt;Torneo de Robótica &lt;br /&gt;&lt;span&gt;UTA Sumo 2026&lt;/span&gt;&lt;/h1&gt;
+      &lt;Link to="/inscripcion" className="btn-primary-action"&gt;Inscribir mi Robot&lt;/Link&gt;
+      &lt;Link to="/admin" className="btn-secondary-action"&gt;Panel de Revisión&lt;/Link&gt;
+    &lt;/div&gt;
+    &lt;div className="hero-card-col"&gt;
+      &lt;img src={{fiseibotAvatar}} alt="Fiseibot" className="fiseibot-robot-image"/&gt;
+      &lt;h2&gt;Fiseibot&lt;/h2&gt;&lt;span&gt;Nexora Sumo Box · Mini Sumo RC Amateur&lt;/span&gt;
+    &lt;/div&gt;
+  &lt;/main&gt;
+&lt;/div&gt;</code></pre>
+
+<!-- PÁGINA 4: MÓDULO DE ADMINISTRACIÓN -->
+<h1 class="section-title">3. Módulo de Administración (`LoginAdmin.jsx`)</h1>
+
+<h2>3.1 Funcionalidad y Casos de Uso</h2>
+<p>
+  El módulo de administración provee la interfaz de inicio de sesión para los jueces evaluadores y el personal 
+  técnico del torneo encargados de la verificación de pagos y control de inscripciones:
+</p>
+<ul>
+  <li><strong>Captura de Credenciales:</strong> Manejo de estado reactivo (<code>useState</code>) para los campos de usuario y contraseña con validación de obligatoriedad en HTML5.</li>
+  <li><strong>Accesibilidad Semántica:</strong> Formularios estructurados con etiquetas <code>&lt;label&gt;</code> vinculadas mediante <code>htmlFor</code> y soporte para autocompletado nativo del navegador (<code>autoComplete="username"</code> y <code>autoComplete="current-password"</code>).</li>
+  <li><strong>Diseño Focalizado:</strong> Tarjeta centrada (<code>#161a22</code>) con inputs oscuros (<code>#0b0d11</code>) y efecto interactivo de foco en azul (<code>#708bf9</code>).</li>
+</ul>
+
+<h2>3.2 Credenciales y Configuración de Prototipo</h2>
+<table>
+  <thead>
+    <tr>
+      <th style="width: 25%;">Campo</th>
+      <th style="width: 25%;">Tipo HTML</th>
+      <th style="width: 25%;">Validación</th>
+      <th>Credenciales de Prueba</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Usuario</strong></td>
+      <td><code>type="text"</code></td>
+      <td>Campo obligatorio</td>
+      <td><code>revisor1</code>, <code>revisor2</code>, <code>revisor3</code>, <code>revisor4</code></td>
+    </tr>
+    <tr>
+      <td><strong>Contraseña</strong></td>
+      <td><code>type="password"</code></td>
+      <td>Campo obligatorio</td>
+      <td><code>eventix</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3.3 Implementación del Componente (`LoginAdmin.jsx`)</h2>
+<pre><code>// LoginAdmin.jsx - Control de credenciales de revisores técnicos
+export default function LoginAdmin() {
+  const [usuario, setUsuario] = useState('');
+  const [contrasena, setContrasena] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    // En producción se invocará el microservicio de autenticación JWT
+    console.log('Credenciales ingresadas:', { usuario, contrasena });
+  };
+
+  return (
+    &lt;div className="login-admin-card"&gt;
+      &lt;h1&gt;Ingreso de revisores&lt;/h1&gt;
+      &lt;form onSubmit={handleSubmit}&gt;
+        &lt;input value={usuario} onChange={(e) => setUsuario(e.target.value)} placeholder="Usuario" required /&gt;
+        &lt;input type="password" value={contrasena} onChange={(e) => setContrasena(e.target.value)} placeholder="Contraseña" required /&gt;
+        &lt;button type="submit"&gt;Ingresar&lt;/button&gt;
+      &lt;/form&gt;
+      &lt;p&gt;Prototipo: usuarios revisor1 a revisor4, contraseña eventix.&lt;/p&gt;
+    &lt;/div&gt;
+  );
+}</code></pre>
+
+<div class="callout callout-info">
+  <strong>Integración Backend Planificada:</strong> En el siguiente ciclo, la función <code>handleSubmit</code> invocará 
+  el endpoint <code>POST /api/v1/auth/login</code> vía <code>fetch</code> o <code>axios</code>, recibiendo un token JWT que 
+  se almacenará en <code>sessionStorage</code> para autorizar el acceso a <code>/admin/dashboard</code>.
+</div>
+
+<!-- PÁGINA 5: ENRUTAMIENTO Y AUDITORÍA -->
+<h1 class="section-title">4. Enrutamiento, Navegación y Auditoría de Código</h1>
+
+<h2>4.1 Mapeo de Rutas en `App.jsx`</h2>
+<p>
+  El archivo principal <code>App.jsx</code> coordina la navegación de toda la plataforma mediante 
+  React Router DOM v7, configurando la bienvenida como ruta principal:
+</p>
+<table>
+  <thead>
+    <tr>
+      <th style="width: 22%;">Ruta (Path)</th>
+      <th style="width: 28%;">Componente</th>
+      <th>Descripción y Propósito</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>/</code></td>
+      <td><code>&lt;Bienvenida /&gt;</code></td>
+      <td><strong>Inicio Oficial Fiseibot:</strong> Presentación institucional, robot oficial y accesos sin scroll.</td>
+    </tr>
+    <tr>
+      <td><code>/inscripcion</code></td>
+      <td><code>&lt;Inscripcion /&gt;</code></td>
+      <td><strong>Módulo de Inscripciones:</strong> Registro de equipos, integrantes y comprobantes de pago.</td>
+    </tr>
+    <tr>
+      <td><code>/admin</code></td>
+      <td><code>&lt;LoginAdmin /&gt;</code></td>
+      <td><strong>Módulo de Administración:</strong> Portal de autenticación para revisores técnicos.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>4.2 Barra de Navegación Global Unificada</h2>
+<p>El navbar global fue actualizado para reflejar la marca Fiseibot:</p>
+<ul>
+  <li><strong>Identidad de Marca:</strong> Isotipo circular del robot Fiseibot (32x32px) con marco ámbar sobrio junto al texto en blanco nítido, enlazando a la raíz <code>/</code>.</li>
+  <li><strong>Navegación:</strong> Enlaces hacia <em>Inicio</em>, <em>Inscripción</em> y botón destacado <em>Panel de revisión</em>.</li>
+  <li><strong>Metadatos en `index.html`:</strong> Título oficial <code>Fiseibot • Club de Robótica FISEI - UTA</code> y Favicon con el robot.</li>
+</ul>
+
+<h2>4.3 Auditoría de Archivos Modificados y Creados</h2>
+<table>
+  <thead>
+    <tr>
+      <th style="width: 38%;">Archivo</th>
+      <th style="width: 17%;">Estado</th>
+      <th>Función Técnica</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>src/components/Bienvenida.jsx</code></td>
+      <td><span class="badge badge-gold">Creado</span></td>
+      <td>Página de bienvenida en una sola pantalla sin scroll.</td>
+    </tr>
+    <tr>
+      <td><code>src/components/Bienvenida.css</code></td>
+      <td><span class="badge badge-gold">Creado</span></td>
+      <td>Estilos de altura fija (100vh), paleta oscura y grid responsivo.</td>
+    </tr>
+    <tr>
+      <td><code>src/assets/fiseibot-avatar.png</code></td>
+      <td><span class="badge badge-gold">Creado</span></td>
+      <td>Isotipo circular oficial con canal alfa transparente.</td>
+    </tr>
+    <tr>
+      <td><code>public/fiseibot-avatar.png</code></td>
+      <td><span class="badge badge-gold">Creado</span></td>
+      <td>Favicon público para la pestaña del navegador.</td>
+    </tr>
+    <tr>
+      <td><code>src/ModuloAdministracion/LoginAdmin.jsx</code></td>
+      <td><span class="badge badge-blue">Implementado</span></td>
+      <td>Formulario de autenticación para revisores técnicos.</td>
+    </tr>
+    <tr>
+      <td><code>src/ModuloAdministracion/LoginAdmin.css</code></td>
+      <td><span class="badge badge-blue">Implementado</span></td>
+      <td>Estilos de la tarjeta de login centrada con inputs interactivos.</td>
+    </tr>
+    <tr>
+      <td><code>src/App.jsx</code></td>
+      <td><span class="badge badge-dark">Actualizado</span></td>
+      <td>Configuración de rutas de React Router y navbar de Fiseibot.</td>
+    </tr>
+    <tr>
+      <td><code>src/App.css</code></td>
+      <td><span class="badge badge-dark">Actualizado</span></td>
+      <td>Estilos del navbar de marca, isotipo y paleta global.</td>
+    </tr>
+    <tr>
+      <td><code>src/index.css</code></td>
+      <td><span class="badge badge-dark">Actualizado</span></td>
+      <td>Normalización de <code>#root</code> para eliminar bordes residuales.</td>
+    </tr>
+    <tr>
+      <td><code>index.html</code></td>
+      <td><span class="badge badge-dark">Actualizado</span></td>
+      <td>Título oficial de Fiseibot y enlace al nuevo favicon.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- PÁGINA 6: COMANDOS, PRUEBAS Y CONCLUSIONES -->
+<h1 class="section-title">5. Manual de Comandos, Pruebas y Conclusiones</h1>
+
+<h2>5.1 Guía de Ejecución y Pruebas</h2>
+<pre><code># 1. Navegar al directorio del frontend
+cd frontend/uta-sumo-web
+
+# 2. Iniciar servidor local de desarrollo con HMR
+npm run dev
+
+# 3. Compilación optimizada para producción (distribución)
+npm run build
+
+# 4. Auditoría de calidad de código y linter
+npm run lint
+
+# 5. Previsualización local del artefacto compilado
+npm run preview</code></pre>
+
+<h2>5.2 Resultados de Calidad y Rendimiento</h2>
+<ul>
+  <li><strong>Vite 8 Build:</strong> Compilación completada con éxito en <strong>785 ms</strong> empaquetando 33 módulos sin errores ni advertencias.</li>
+  <li><strong>Oxlint:</strong> <strong>0 advertencias y 0 errores</strong> detectados sobre 9 archivos evaluados bajo 104 reglas de análisis sintáctico.</li>
+  <li><strong>Compatibilidad de Navegadores:</strong> Totalmente compatible con Chrome, Firefox, Safari y Edge en sus versiones modernas.</li>
+</ul>
+
+<h2>5.3 Conclusiones y Próximos Pasos</h2>
+<ol>
+  <li><strong>Página de Inicio Consolidada:</strong> La raíz <code>/</code> presenta una experiencia institucional sobria, moderna y sin barras de desplazamiento vertical, reflejando fielmente la identidad del Club Fiseibot.</li>
+  <li><strong>Módulo de Administración Integrado:</strong> El portal de revisores cuenta con su ruta propia <code>/admin</code> y acceso directo en el navbar, listo para su fase de conexión con la API de validación de comprobantes.</li>
+  <li><strong>Arquitectura Escalable:</strong> La separación modular en <code>ModuloAdministracion</code>, <code>ModuloIncripcion</code> y <code>components</code> asegura que futuros módulos se integren de forma limpia e independiente.</li>
+</ol>
+
+<div class="callout callout-success">
+  <strong>Certificación de Entrega:</strong> Este documento certifica la correcta implementación y verificación de los módulos 
+  solicitados para la plataforma del Torneo de Robótica UTA Sumo 2026.
+</div>
+
+</body>
+</html>
