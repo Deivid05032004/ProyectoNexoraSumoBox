@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import fiseibotAvatar from '../assets/fiseibot-avatar.png';
 import './Bienvenida.css';
 
-export default function Bienvenida() {
+export default function Bienvenida({ inscriptionPath = '/participante', showAuthorizedPanel = true }) {
   return (
     <div className="home-wrapper">
       <main className="home-content">
@@ -29,41 +29,20 @@ export default function Bienvenida() {
           </p>
 
           <div className="hero-actions">
-            <Link to="/inscripcion" className="btn-primary-action">
+            <Link to={inscriptionPath} className="btn-primary-action">
               <span>Inscribir mi Robot</span>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
             </Link>
 
-            <Link to="/admin" className="btn-secondary-action">
-              <span>Panel de Revisión</span>
-            </Link>
+            {showAuthorizedPanel && (
+              <Link to="/admin" className="btn-secondary-action">
+                <span>Panel de Revisión</span>
+              </Link>
+            )}
           </div>
 
-          <div className="hero-features-list">
-            <div className="feature-pill">
-              <span className="feature-pill-icon">⚡</span>
-              <div>
-                <strong>Mini Sumo RC</strong>
-                <small>Categoría Amateur</small>
-              </div>
-            </div>
-            <div className="feature-pill">
-              <span className="feature-pill-icon">⚖️</span>
-              <div>
-                <strong>Reglamento Oficial</strong>
-                <small>Control y pesaje técnico</small>
-              </div>
-            </div>
-            <div className="feature-pill">
-              <span className="feature-pill-icon">👥</span>
-              <div>
-                <strong>Equipos</strong>
-                <small>2 a 3 integrantes</small>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* Columna Derecha: Tarjeta Institucional con el Robot */}

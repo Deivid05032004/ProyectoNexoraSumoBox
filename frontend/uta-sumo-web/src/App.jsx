@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, Route, Routes, useNavigate } from 'react-router-dom';
+import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import './App.css';
 import Bienvenida from './components/Bienvenida';
 import LoginAdmin from './ModuloAdministracion/LoginAdmin';
@@ -7,25 +7,25 @@ import AdminDashboard from './ModuloAdministracion/AdminDashboard';
 import Resultados from './ModuloResultados/Resultados';
 import Inscripcion from './ModuloIncripcion/components/Inscripcion';
 import ParticipantAccess from './ModuloParticipante/ParticipantAccess';
+import PanelParticipante from './ModuloIncripcion/components/PanelParticipante';
 import fiseibotAvatar from './assets/fiseibot-avatar.png';
+
+function leerUsuarioSesion() {
+  try {
+    return JSON.parse(sessionStorage.getItem('uta.user') || 'null');
+  } catch {
+    return null;
+  }
+}
 
 export default function App() {
   const navigate = useNavigate();
-  const [user, setUser] = useState(() => {
-    try {
-      return JSON.parse(sessionStorage.getItem('uta.user') || 'null');
-    } catch {
-      return null;
-    }
-  });
+  const [, setUser] = useState(leerUsuarioSesion);
+  const user = leerUsuarioSesion();
 
   useEffect(() => {
     const actualizarSesion = () => {
-      try {
-        setUser(JSON.parse(sessionStorage.getItem('uta.user') || 'null'));
-      } catch {
-        setUser(null);
-      }
+      setUser(leerUsuarioSesion());
     };
     window.addEventListener('uta-session-changed', actualizarSesion);
     window.addEventListener('storage', actualizarSesion);
@@ -55,25 +55,27 @@ export default function App() {
           </Link>
         </div>
         <nav className="navbar-nav" aria-label="Navegación principal">
-          <Link to="/" className="nav-link">Inicio</Link>
+          {!participanteActivo && <Link to="/" className="nav-link">Inicio</Link>}
           <Link to="/resultados" className="nav-link">Ver resultados</Link>
+          <Link to={participanteActivo ? '/participante/panel' : '/participante'} className="nav-link">Participantes</Link>
           {participanteActivo ? (
             <>
-              <Link to="/inscripcion" className="nav-link">Mi inscripción</Link>
+              <Link to="/inscripcion" className="nav-link nav-link-hidden">Mi inscripción</Link>
               <button type="button" className="nav-logout" onClick={cerrarSesionParticipante}>
                 Cerrar sesión
               </button>
             </>
           ) : (
             <>
-              <Link to="/inscripcion" className="nav-link">Inscripción</Link>
-              <Link to="/registro" className="nav-link">Crear cuenta</Link>
-              <Link to="/participante" className="nav-link">Participantes</Link>
+              <Link to="/inscripcion" className="nav-link nav-link-hidden">Inscripción</Link>
+              <Link to="/registro" className="nav-link nav-link-hidden">Crear cuenta</Link>
             </>
           )}
-          <Link to={adminActivo ? "/admin/dashboard" : "/admin"} className="btn-panel">
-            {adminActivo ? "Panel de administración" : "Personal autorizado"}
-          </Link>
+          {!participanteActivo && (
+            <Link to={adminActivo ? "/admin/dashboard" : "/admin"} className="btn-panel">
+              {adminActivo ? "Panel de administración" : "Personal autorizado"}
+            </Link>
+          )}
         </nav>
       </header>
       <div className="app-main">
@@ -82,10 +84,21 @@ export default function App() {
           <Route path="/resultados" element={<Resultados />} />
           <Route path="/inscripcion" element={<Inscripcion />} />
           <Route path="/registro" element={<ParticipantAccess initialMode="register" />} />
-          <Route path="/participante" element={<ParticipantAccess initialMode="login" />} />
-          <Route path="/admin" element={<LoginAdmin />} />
-          <Route path="/admin/dashboard" element={<AdminDashboard />} />
-          <Route path="/admin/panel" element={<AdminDashboard />} />
+          <Route path="/participante" element={participanteActivo
+            ? <Navigate to="/participante/panel" replace />
+            : <ParticipantAccess initialMode="login" />} />
+          <Route path="/participante/panel" element={participanteActivo
+            ? <PanelParticipante user={user} />
+            : <Navigate to="/participante" replace />} />
+          <Route path="/admin" element={participanteActivo
+            ? <Navigate to="/participante/panel" replace />
+            : <LoginAdmin />} />
+          <Route path="/admin/dashboard" element={participanteActivo
+            ? <Navigate to="/participante/panel" replace />
+            : <AdminDashboard />} />
+          <Route path="/admin/panel" element={participanteActivo
+            ? <Navigate to="/participante/panel" replace />
+            : <AdminDashboard />} />
           <Route path="*" element={<Bienvenida />} />
         </Routes>
       </div>

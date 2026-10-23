@@ -3,18 +3,6 @@
   white-space: pre-line;
 }
 
-.registration-view-switch {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-
-.registration-view-switch button[aria-pressed='true'] {
-  background: var(--registration-accent);
-  color: #fff;
-}
-
 .form-grid-two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -52,14 +40,6 @@
 }
 
 @media (max-width: 720px) {
-  .registration-view-switch {
-    justify-content: stretch;
-  }
-
-  .registration-view-switch button {
-    flex: 1;
-  }
-
   .form-grid-two {
     grid-template-columns: 1fr;
   }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import './ParticipantAccess.css';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
@@ -17,6 +17,7 @@ async function responseMessage(response) {
 
 export default function ParticipantAccess({ initialMode = 'login' }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [mode, setMode] = useState(initialMode);
   const [institutions, setInstitutions] = useState([]);
   const [institutionId, setInstitutionId] = useState('');
@@ -99,10 +100,11 @@ export default function ParticipantAccess({ initialMode = 'login' }) {
     sessionStorage.setItem('uta.access_token', body.access_token);
     sessionStorage.setItem('uta.user', JSON.stringify(body.user));
     window.dispatchEvent(new Event('uta-session-changed'));
-    setNotice(`Sesión iniciada para ${body.user.email}. Ya puedes continuar con tu inscripción.`);
+    setNotice(`Sesión iniciada para ${body.user.email}. Ya puedes gestionar tu participación.`);
     setError('');
     setPassword('');
-    navigate('/inscripcion', { replace: true });
+    const destino = location.state?.from === '/inscripcion' ? '/inscripcion' : '/participante/panel';
+    navigate(destino, { replace: true });
   }
 
   async function responseMessageFromBody(response, body) {
