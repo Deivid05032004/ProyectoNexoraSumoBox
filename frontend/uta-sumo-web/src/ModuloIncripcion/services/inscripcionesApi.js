@@ -39,6 +39,11 @@ export async function cargarConfiguracionEvento(eventId) {
   return mensajeRespuesta(response)
 }
 
+export async function cargarCategoriasEvento(eventId) {
+  const response = await fetch(`${API_BASE}/api/v1/events/${eventId}/categories`)
+  return mensajeRespuesta(response)
+}
+
 export async function cargarMisOrdenes(token) {
   return solicitud('/api/v1/payments/my?limit=100', token)
 }

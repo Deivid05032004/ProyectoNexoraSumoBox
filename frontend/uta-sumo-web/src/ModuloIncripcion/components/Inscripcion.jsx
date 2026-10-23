@@ -184,7 +184,7 @@ export default function Inscripcion() {
   }
 
   if (!token) {
-    return <section className="registration-section"><div className="registration-card confirmation-card"><span className="eyebrow">ACCESO REQUERIDO</span><h1>Inicia sesión para inscribirte</h1><p>La inscripción se asocia a tu cuenta de participante para proteger tus datos y gestionar el pago.</p><Link className="primary-button registration-link" to="/participante">Iniciar sesión como participante</Link></div></section>
+    return <section className="registration-section"><div className="registration-card confirmation-card"><span className="eyebrow">ACCESO REQUERIDO</span><h1>Inicia sesión para inscribirte</h1><p>La inscripción se asocia a tu cuenta de participante para proteger tus datos y gestionar el pago.</p><Link className="primary-button registration-link" to="/participante" state={{ from: '/inscripcion' }}>Iniciar sesión como participante</Link></div></section>
   }
 
   if (cargando) return <section className="registration-section"><div className="registration-card"><p>Cargando datos de inscripción...</p></div></section>
@@ -207,10 +207,6 @@ export default function Inscripcion() {
   }
 
   return <section className="registration-section" id="inscripcion">
-    <div className="registration-view-switch" role="group" aria-label="Sección de inscripciones">
-      <button className="secondary-button" type="button" aria-pressed={vista === 'formulario'} onClick={() => setVista('formulario')}>Crear inscripción</button>
-      <button className="secondary-button" type="button" aria-pressed={vista === 'ordenes'} onClick={() => setVista('ordenes')}>Mis órdenes de pago</button>
-    </div>
     <div className="section-heading">
       <span className="eyebrow">{configuracionEvento?.organization_name || 'REGISTRO OFICIAL'}</span>
       <h1>{configuracionEvento?.form_title || 'Inscripción al evento'}</h1>

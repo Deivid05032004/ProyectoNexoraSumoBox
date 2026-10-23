@@ -1,6 +1,8 @@
 .my-orders-section {
   display: grid;
-  gap: 18px;
+  gap: 20px;
+  width: min(100%, 1120px);
+  margin: 0 auto;
 }
 
 .my-orders-toolbar {
@@ -11,7 +13,9 @@
 
 .my-order-card {
   display: grid;
-  gap: 18px;
+  gap: 20px;
+  padding: 24px;
+  border-radius: 14px;
 }
 
 .my-order-heading {
@@ -58,8 +62,8 @@
 
 .my-order-details {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 18px;
   margin: 0;
 }
 
@@ -126,6 +130,8 @@
 .my-orders-empty {
   display: grid;
   gap: 14px;
+  padding: 28px;
+  border-radius: 14px;
 }
 
 .my-orders-empty p {

@@ -88,6 +88,10 @@ body {
   color: var(--text-main);
 }
 
+.nav-link-hidden {
+  display: none;
+}
+
 .nav-logout {
   padding: 0;
   border: 0;
