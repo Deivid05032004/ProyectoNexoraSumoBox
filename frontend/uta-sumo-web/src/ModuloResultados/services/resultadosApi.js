@@ -1,5 +1,5 @@
 /**
- * Servicio de Resultados con Sincronización en Tiempo Real.
+ * Servicio de Resultados con sincronización del backend y canales locales.
  *
  * Capas de sincronización implementadas:
  *  1. BroadcastChannel API — instantáneo entre pestañas del mismo origen (mismo dispositivo).
@@ -9,16 +9,78 @@
  *     Garantiza sincronización entre dispositivos distintos (admin en laptop, pantalla en TV).
  *  3. Page Visibility API — pausa el polling agresivo cuando la pestaña no está activa.
  *
- * No requiere cambios en el backend. Toda la persistencia usa localStorage.
- * Cuando se integre un backend real, solo hay que cambiar las funciones
- * obtenerResultadosTorneo() y guardarResultadosTorneo().
+ * El snapshot público del backend es la fuente principal. localStorage,
+ * BroadcastChannel y los eventos DOM conservan compatibilidad local/offline.
  */
 
 const STORAGE_KEY_RESULTADOS = 'uta.torneo.resultados';
+const STORAGE_KEY_CRONOMETRO = 'uta.torneo.cronometro';
 const BROADCAST_CHANNEL_NAME = 'uta-resultados-channel';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+const API_WS_BASE = API_BASE.replace(/^http/, 'ws');
 
 /** Nombre del evento DOM interno para notificar dentro de la misma pestaña. */
 export const EVENTO_RESULTADOS_ACTUALIZADOS = 'uta-resultados-updated';
+export const EVENTO_CRONOMETRO_ACTUALIZADO = 'uta-cronometro-updated';
+export const CRONOMETRO_INICIAL = { enabled: false, seconds: 180 };
+
+/** Escucha el snapshot en vivo publicado por FastAPI; polling sigue como respaldo. */
+export function suscribirWebSocketCombate(onActualizacion) {
+  let detenido = false;
+  let socket;
+  let retryTimer;
+  let intentos = 0;
+
+  function conectar() {
+    if (detenido || typeof WebSocket === 'undefined') return;
+    try {
+      socket = new WebSocket(`${API_WS_BASE}/ws/combate-actual`);
+      socket.onopen = () => { intentos = 0; };
+      socket.onmessage = (event) => {
+        try {
+          const snapshot = JSON.parse(event.data);
+          if (snapshot?.robotA && snapshot?.robotB) {
+            onActualizacion({ ...COMBATE_ACTUAL_INICIAL, ...snapshot });
+          }
+        } catch { /* El polling recupera snapshots inválidos */ }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (detenido) return;
+        intentos += 1;
+        retryTimer = setTimeout(conectar, Math.min(15000, 1000 * (2 ** Math.min(intentos - 1, 4))));
+      };
+    } catch {
+      if (!detenido) retryTimer = setTimeout(conectar, 5000);
+    }
+  }
+
+  conectar();
+  return {
+    stop: () => {
+      detenido = true;
+      clearTimeout(retryTimer);
+      socket?.close();
+    },
+  };
+}
+
+export function obtenerConfiguracionCronometro() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY_CRONOMETRO) || 'null');
+    if (stored && typeof stored.enabled === 'boolean' && Number.isFinite(Number(stored.seconds))) {
+      return { enabled: stored.enabled, seconds: Math.max(1, Math.floor(Number(stored.seconds))) };
+    }
+  } catch { /* Usa valores iniciales */ }
+  return CRONOMETRO_INICIAL;
+}
+
+export function guardarConfiguracionCronometro(config) {
+  const value = { enabled: Boolean(config.enabled), seconds: Math.max(1, Math.floor(Number(config.seconds) || 180)) };
+  localStorage.setItem(STORAGE_KEY_CRONOMETRO, JSON.stringify(value));
+  window.dispatchEvent(new CustomEvent(EVENTO_CRONOMETRO_ACTUALIZADO, { detail: value }));
+  return value;
+}
 
 /** Intervalo de polling cuando la pestaña está visible (ms). */
 const POLL_INTERVAL_ACTIVE_MS = 2000;
@@ -193,12 +255,25 @@ export function iniciarPolling(onActualizacion) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Consulta el combate actual.
- * En el futuro, reemplazar localStorage por: const res = await fetch('/api/v1/combate-activo');
+ * Consulta el snapshot público del combate; conserva localStorage como fallback
+ * para que la pantalla siga funcionando si la API no está disponible.
  */
 export async function obtenerResultadosTorneo() {
-  // Simula latencia de red para pruebas de UX (~50ms vs un fetch real)
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/competition/combate-actual`);
+    if (response.ok) {
+      const snapshot = await response.json();
+      if (snapshot?.robotA && snapshot?.robotB) {
+        return {
+          ...COMBATE_ACTUAL_INICIAL,
+          ...snapshot,
+          ultimaActualizacion: snapshot.ultimaActualizacion || '--:--',
+        };
+      }
+    }
+  } catch {
+    // Use the locally stored scoreboard as an offline fallback.
+  }
 
   const guardado = localStorage.getItem(STORAGE_KEY_RESULTADOS);
   if (guardado) {
@@ -217,6 +292,15 @@ export async function obtenerResultadosTorneo() {
 
   localStorage.setItem(STORAGE_KEY_RESULTADOS, JSON.stringify(COMBATE_ACTUAL_INICIAL));
   return COMBATE_ACTUAL_INICIAL;
+}
+
+/** Lee la clasificación persistida por el backend para el evento del combate. */
+export async function obtenerTablaPosiciones(eventId) {
+  if (!eventId) return [];
+  const response = await fetch(`${API_BASE}/api/v1/events/${eventId}/leaderboard`);
+  if (!response.ok) throw new Error(`No se pudo cargar la tabla de posiciones (${response.status}).`);
+  const data = await response.json();
+  return data.items || [];
 }
 
 /**
