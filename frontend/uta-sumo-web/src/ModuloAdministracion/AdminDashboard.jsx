@@ -1,318 +1,204 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  obtenerInscripciones,
-  actualizarEstadoInscripcion,
-  exportarInscripcionesCSV,
-} from './services/adminInscripcionesApi';
+import { apiRequest, getAdminUser } from './services/adminApi';
+import { obtenerInscripciones, actualizarEstadoInscripcion, actualizarEstadoPago, exportarInscripcionesCSV } from './services/adminInscripcionesApi';
 import ResultadosModal from './components/ResultadosModal';
+import AdminCreateForm from './AdminCreateForm';
+import RegistrationFormBuilder from './RegistrationFormBuilder';
 import './AdminDashboard.css';
+
+const STATUS_CHOICES = [
+  ['PENDING', 'Pendiente'], ['APPROVED', 'Aprobado'], ['OBSERVED', 'Observado'], ['REJECTED', 'Rechazado'],
+];
+const FILTER_STATUS_CHOICES = [
+  ['PAYMENT_PENDING', 'Pago pendiente'], ['PAYMENT_REVIEW', 'Pago en revisión'], ...STATUS_CHOICES,
+];
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
-
-  // Estado del revisor en sesión (inicializado perezosamente para React 19)
-  const [usuarioActual] = useState(() => {
-    try {
-      const storedRevisor = sessionStorage.getItem('uta.revisor');
-      if (storedRevisor) return storedRevisor;
-      const storedUser = JSON.parse(sessionStorage.getItem('uta.user') || 'null');
-      if (storedUser?.username) return storedUser.username;
-    } catch {
-      // fallback
-    }
-    return 'revisor1';
-  });
-
-  // Estados de datos preparados para backend (mock fetch)
+  const [user] = useState(getAdminUser);
   const [inscripciones, setInscripciones] = useState([]);
+  const [categorias, setCategorias] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState(null);
-
-  // Estados de filtros
+  const [error, setError] = useState('');
+  const [toast, setToast] = useState('');
   const [busquedaInstitucion, setBusquedaInstitucion] = useState('');
-  const [filtroCategoria, setFiltroCategoria] = useState('Todas');
-  const [filtroEstado, setFiltroEstado] = useState('Todos');
-
-  // Estado del modal de gestión de resultados en vivo
+  const [filtroCategoria, setFiltroCategoria] = useState('');
+  const [filtroEstado, setFiltroEstado] = useState('');
   const [modalResultadosAbierto, setModalResultadosAbierto] = useState(false);
+  const [crearAdmin, setCrearAdmin] = useState(false);
+  const [crearFormulario, setCrearFormulario] = useState(false);
+  const [actualizando, setActualizando] = useState(null);
+  const [combateActual, setCombateActual] = useState(null);
 
-  // Carga inicial simulando llamada a API asíncrona
+  const cargar = useCallback(async () => {
+    setCargando(true);
+    setError('');
+    try {
+      const [rows, cats] = await Promise.all([
+        obtenerInscripciones({ categoria: filtroCategoria, estado: filtroEstado }),
+        apiRequest('/api/v1/categories?page=1&limit=100'),
+      ]);
+      setInscripciones(rows);
+      setCategorias(cats);
+    } catch (err) {
+      setError(err.message || 'Error al consultar las inscripciones.');
+    } finally { setCargando(false); }
+  }, [filtroCategoria, filtroEstado]);
+
   useEffect(() => {
-    let activo = true;
-
-    async function cargarInscripcionesApi() {
-      try {
-        setCargando(true);
-        setError(null);
-        // Función asíncrona: en el futuro solo cambiar la URL del fetch interno
-        const datos = await obtenerInscripciones();
-        if (activo) {
-          setInscripciones(datos);
-        }
-      } catch (err) {
-        if (activo) {
-          setError(err.message || 'Error al consultar las inscripciones.');
-        }
-      } finally {
-        if (activo) {
-          setCargando(false);
-        }
-      }
+    if (!user || !['ADMIN', 'EVENT_MANAGER'].includes(user.role)) {
+      navigate('/admin', { replace: true });
+      return;
     }
+    cargar();
+  }, [user, navigate, cargar]);
 
-    cargarInscripcionesApi();
-
-    return () => {
-      activo = false;
+  useEffect(() => {
+    let mounted = true;
+    const consultarCombate = async () => {
+      try {
+        const snapshot = await apiRequest('/api/v1/competition/combate-actual');
+        if (mounted) setCombateActual(snapshot?.active ? snapshot : null);
+      } catch { if (mounted) setCombateActual(null); }
     };
+    consultarCombate();
+    const interval = window.setInterval(consultarCombate, 2500);
+    return () => { mounted = false; window.clearInterval(interval); };
   }, []);
 
-  // Manejo de cambio de estado (Pendiente / Aprobado)
-  const handleCambiarEstado = async (id, nuevoEstado) => {
-    try {
-      // Llamada simulada a PATCH/PUT de backend
-      const listaActualizada = await actualizarEstadoInscripcion(
-        id,
-        nuevoEstado,
-        usuarioActual
-      );
-      setInscripciones(listaActualizada);
-    } catch (err) {
-      console.error('Error al actualizar estado:', err);
-    }
-  };
+  function estaEnCombate(item) {
+    const row = item.raw || {};
+    return Boolean(combateActual && ['EN_VIVO', 'PAUSADO'].includes(combateActual.estado_code)
+      && Number(row.event_id) === Number(combateActual.event_id)
+      && Number(row.category_id) === Number(combateActual.category_id)
+      && ((Number(row.team_id) === Number(combateActual.team_id_a) && Number(row.robot_id) === Number(combateActual.robot_id_a))
+        || (Number(row.team_id) === Number(combateActual.team_id_b) && Number(row.robot_id) === Number(combateActual.robot_id_b))));
+  }
 
-  // Manejo de cierre de sesión
-  const handleCerrarSesion = () => {
-    sessionStorage.removeItem('uta.access_token');
-    sessionStorage.removeItem('uta.user');
-    sessionStorage.removeItem('uta.revisor');
-    sessionStorage.removeItem('uta.admin_session');
+  const visibles = useMemo(() => inscripciones.filter((item) =>
+    !busquedaInstitucion.trim() || `${item.institucion} ${item.robot}`.toLowerCase().includes(busquedaInstitucion.toLowerCase())),
+  [inscripciones, busquedaInstitucion]);
+
+  const metricas = useMemo(() => ({
+    total: visibles.length,
+    pendientes: visibles.filter((item) => ['PENDING', 'PAYMENT_PENDING', 'PAYMENT_REVIEW'].includes(item.estado)
+      || ['PENDING', 'IN_REVIEW'].includes(item.paymentStatus)).length,
+    aprobadas: visibles.filter((item) => item.estado === 'APPROVED').length,
+  }), [visibles]);
+
+  async function cambiarEstado(item, status) {
+    setActualizando(item.id);
+    try {
+      await actualizarEstadoInscripcion(item.id, status);
+      setToast(`Inscripción ${item.codigo} actualizada: ${status}.`);
+      await cargar();
+    } catch (err) {
+      setToast(`No se pudo actualizar: ${err.message}`);
+    } finally {
+      setActualizando(null);
+      window.setTimeout(() => setToast(''), 4500);
+    }
+  }
+
+  async function cambiarEstadoPago(item, status) {
+    const key = `payment-${item.id}`;
+    setActualizando(key);
+    try {
+      const payment = await actualizarEstadoPago(item.paymentId, status);
+      const paymentStatusLabel = { PAID: 'Pagado', REJECTED: 'Rechazado' }[payment.status] || payment.status;
+      const registrationLabels = {
+        PAYMENT_PENDING: 'Pago pendiente', PAYMENT_REVIEW: 'Pago en revisión',
+        PENDING: 'Pendiente', APPROVED: 'Aprobado', OBSERVED: 'Observado', REJECTED: 'Rechazado',
+      };
+      setInscripciones((rows) => rows.map((row) => row.id === item.id ? {
+        ...row,
+        paymentStatus: payment.status,
+        paymentStatusLabel,
+        estado: payment.registration_status || row.estado,
+        estadoLabel: registrationLabels[payment.registration_status] || row.estadoLabel,
+        raw: { ...row.raw, payment_status: payment.status },
+      } : row));
+      setToast(`Pago de ${item.codigo}: ${paymentStatusLabel}.`);
+    } catch (err) {
+      setToast(`No se pudo actualizar el pago: ${err.message}`);
+    } finally {
+      setActualizando(null);
+      window.setTimeout(() => setToast(''), 4500);
+    }
+  }
+
+  function cerrarSesion() {
+    ['uta.access_token', 'uta.user', 'uta.revisor'].forEach((key) => sessionStorage.removeItem(key));
     window.dispatchEvent(new Event('uta-session-changed'));
     navigate('/admin', { replace: true });
-  };
-
-  // Cálculos dinámicos de las tarjetas de resumen
-  const metricas = useMemo(() => {
-    const total = inscripciones.length;
-    const pendientes = inscripciones.filter((i) => i.estado === 'Pendiente').length;
-    const aprobadas = inscripciones.filter((i) => i.estado === 'Aprobado').length;
-    return { total, pendientes, aprobadas };
-  }, [inscripciones]);
-
-  // Filtrado reactivo de la tabla
-  const inscripcionesFiltradas = useMemo(() => {
-    return inscripciones.filter((item) => {
-      // Filtro por institución o nombre de robot
-      const coincideInstitucion =
-        !busquedaInstitucion.trim() ||
-        item.institucion.toLowerCase().includes(busquedaInstitucion.toLowerCase()) ||
-        item.robot.toLowerCase().includes(busquedaInstitucion.toLowerCase());
-
-      // Filtro por categoría
-      const coincideCategoria =
-        filtroCategoria === 'Todas' || item.categoria === filtroCategoria;
-
-      // Filtro por estado
-      const coincideEstado =
-        filtroEstado === 'Todos' || item.estado === filtroEstado;
-
-      return coincideInstitucion && coincideCategoria && coincideEstado;
-    });
-  }, [inscripciones, busquedaInstitucion, filtroCategoria, filtroEstado]);
+  }
 
   return (
     <div className="admin-dashboard-page">
       <div className="admin-dashboard-container">
-        {/* HEADER SUPERIOR */}
         <header className="admin-dashboard-header">
           <h1 className="admin-page-title">Inscripciones</h1>
-
           <div className="admin-header-actions">
-            <span className="admin-session-text">Sesión: {usuarioActual}</span>
-
-            {/* Botón para gestión de marcadores en tiempo real (Req. 3) */}
-            <button
-              type="button"
-              className="btn-admin-results"
-              onClick={() => setModalResultadosAbierto(true)}
-              title="Abrir panel de resultados en vivo"
-            >
-              <span className="live-dot" />
-              Marcador en vivo
-            </button>
-
-            <button
-              type="button"
-              className="btn-admin-header"
-              onClick={() => exportarInscripcionesCSV(inscripcionesFiltradas)}
-            >
-              Exportar CSV
-            </button>
-
-            <button
-              type="button"
-              className="btn-admin-header"
-              onClick={handleCerrarSesion}
-            >
-              Cerrar sesión
-            </button>
+            <span className="admin-session-text">Sesión: {user?.email} · {user?.role}</span>
+            <button type="button" className="btn-admin-results" onClick={() => setModalResultadosAbierto(true)}><span className="live-dot" /> Marcador en vivo</button>
+            {user?.role === 'ADMIN' && <button type="button" className="btn-admin-header" onClick={() => setCrearFormulario(true)}>Crear formulario</button>}
+            <button type="button" className="btn-admin-header" onClick={() => setCrearAdmin(true)}>Nuevo administrador</button>
+            <button type="button" className="btn-admin-header" onClick={() => exportarInscripcionesCSV(visibles)}>Exportar CSV</button>
+            <button type="button" className="btn-admin-header" onClick={cerrarSesion}>Cerrar sesión</button>
           </div>
         </header>
 
-        {/* TARJETAS DE RESUMEN (Métricas) */}
         <section className="admin-summary-cards" aria-label="Resumen de inscripciones">
-          <article className="summary-card">
-            <div className="summary-number">{metricas.total}</div>
-            <div className="summary-label">Total</div>
-          </article>
-
-          <article className="summary-card">
-            <div className="summary-number">{metricas.pendientes}</div>
-            <div className="summary-label">Pendientes</div>
-          </article>
-
-          <article className="summary-card">
-            <div className="summary-number">{metricas.aprobadas}</div>
-            <div className="summary-label">Aprobadas</div>
-          </article>
+          <article className="summary-card"><div className="summary-number">{metricas.total}</div><div className="summary-label">En esta página</div></article>
+          <article className="summary-card"><div className="summary-number">{metricas.pendientes}</div><div className="summary-label">Pendientes</div></article>
+          <article className="summary-card"><div className="summary-number">{metricas.aprobadas}</div><div className="summary-label">Aprobadas</div></article>
         </section>
 
-        {/* BARRA DE FILTROS */}
         <section className="admin-filters-bar" aria-label="Filtros de búsqueda">
-          <div className="filter-group filter-group-search">
-            <label htmlFor="filter-institucion" className="filter-label">
-              Buscar por institución
-            </label>
-            <input
-              id="filter-institucion"
-              type="text"
-              className="filter-input"
-              value={busquedaInstitucion}
-              onChange={(e) => setBusquedaInstitucion(e.target.value)}
-              placeholder=""
-            />
-          </div>
-
-          <div className="filter-group filter-group-select">
-            <label htmlFor="filter-categoria" className="filter-label">
-              Categoría
-            </label>
-            <select
-              id="filter-categoria"
-              className="filter-select"
-              value={filtroCategoria}
-              onChange={(e) => setFiltroCategoria(e.target.value)}
-            >
-              <option value="Todas">Todas</option>
-              <option value="Mini Sumo RC Amateur">Mini Sumo RC Amateur</option>
-            </select>
-          </div>
-
-          <div className="filter-group filter-group-select">
-            <label htmlFor="filter-estado" className="filter-label">
-              Estado
-            </label>
-            <select
-              id="filter-estado"
-              className="filter-select"
-              value={filtroEstado}
-              onChange={(e) => setFiltroEstado(e.target.value)}
-            >
-              <option value="Todos">Todos</option>
-              <option value="Pendiente">Pendiente</option>
-              <option value="Aprobado">Aprobado</option>
-            </select>
-          </div>
+          <div className="filter-group filter-group-search"><label htmlFor="filter-institucion" className="filter-label">Buscar por institución</label>
+            <input id="filter-institucion" className="filter-input" value={busquedaInstitucion} onChange={(e) => setBusquedaInstitucion(e.target.value)} placeholder="Institución o robot" /></div>
+          <div className="filter-group filter-group-select"><label htmlFor="filter-categoria" className="filter-label">Categoría</label>
+            <select id="filter-categoria" className="filter-select" value={filtroCategoria} onChange={(e) => setFiltroCategoria(e.target.value)}>
+              <option value="">Todas</option>{categorias.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+            </select></div>
+          <div className="filter-group filter-group-select"><label htmlFor="filter-estado" className="filter-label">Estado</label>
+            <select id="filter-estado" className="filter-select" value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)}>
+              <option value="">Todos</option>{FILTER_STATUS_CHOICES.map(([code, label]) => <option key={code} value={label}>{label}</option>)}
+            </select></div>
         </section>
 
-        {/* TABLA DE DATOS */}
+        {toast && <div className="table-state-box" role="status">{toast}</div>}
         <section className="admin-table-container">
-          {cargando ? (
-            <div className="table-state-box">Cargando inscripciones del torneo...</div>
-          ) : error ? (
-            <div className="table-state-box table-error">{error}</div>
-          ) : inscripcionesFiltradas.length === 0 ? (
-            <div className="table-state-box">No se encontraron inscripciones con los filtros seleccionados.</div>
-          ) : (
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th scope="col" style={{ width: '15%' }}>Código</th>
-                  <th scope="col" style={{ width: '22%' }}>Robot e institución</th>
-                  <th scope="col" style={{ width: '33%' }}>Integrantes</th>
-                  <th scope="col" style={{ width: '12%' }}>Tarifa</th>
-                  <th scope="col" style={{ width: '18%' }}>Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {inscripcionesFiltradas.map((item) => (
-                  <tr key={item.id} className="table-row">
-                    {/* Código */}
-                    <td className="cell-codigo">
-                      <strong className="main-text">{item.codigo}</strong>
-                      <span className="sub-text">{item.fecha}</span>
-                    </td>
-
-                    {/* Robot e institución */}
-                    <td className="cell-robot">
-                      <strong className="main-text">{item.robot}</strong>
-                      <span className="sub-text">{item.institucion}</span>
-                    </td>
-
-                    {/* Integrantes */}
-                    <td className="cell-integrantes">
-                      <div className="integrantes-list">
-                        {item.integrantes.map((m, idx) => (
-                          <div key={idx} className="integrante-line">
-                            <span className="integrante-nombre">{m.nombre}</span>
-                            <span className="integrante-celular">
-                              {m.celular}
-                              {m.esCoach ? ' · coach' : ''}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </td>
-
-                    {/* Tarifa */}
-                    <td className="cell-tarifa">
-                      <span className="tarifa-amount">${item.tarifa}</span>
-                    </td>
-
-                    {/* Estado con dropdown interactivo */}
-                    <td className="cell-estado">
-                      <div className="estado-select-wrapper">
-                        <select
-                          className={`estado-select ${item.estado.toLowerCase()}`}
-                          value={item.estado}
-                          onChange={(e) => handleCambiarEstado(item.id, e.target.value)}
-                          aria-label={`Cambiar estado de ${item.codigo}`}
-                        >
-                          <option value="Aprobado">Aprobado</option>
-                          <option value="Pendiente">Pendiente</option>
-                        </select>
-                      </div>
-                      <span className="estado-subtext">
-                        {item.estado === 'Aprobado'
-                          ? `Revisó ${item.revisor || usuarioActual}`
-                          : 'Sin revisar'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          {cargando ? <div className="table-state-box">Cargando inscripciones del backend…</div>
+            : error ? <div className="table-state-box table-error">{error}</div>
+              : !visibles.length ? <div className="table-state-box">No se encontraron inscripciones.</div>
+                : <table className="admin-table"><thead><tr><th>Código</th><th>Robot e institución</th><th>Integrantes</th><th>Tarifa</th><th>Estado de inscripción</th><th>Estado de pago</th></tr></thead>
+                  <tbody>{visibles.map((item) => {
+                    const bloqueadoPorCombate = estaEnCombate(item);
+                    return <tr key={item.id} className="table-row">
+                      <td className="cell-codigo"><strong className="main-text">{item.codigo}</strong><span className="sub-text">{item.fecha}</span></td>
+                      <td className="cell-robot"><strong className="main-text">{item.robot}</strong><span className="sub-text">{item.institucion}</span></td>
+                      <td className="cell-integrantes"><div className="integrantes-list">{item.integrantes.map((person, index) => <div key={`${item.id}-${index}`} className="integrante-line"><span className="integrante-nombre">{person.nombre}</span><span className="integrante-celular">{person.celular}{person.esCoach ? ' · coach' : ''}</span></div>)}</div></td>
+                      <td className="cell-tarifa"><span className="tarifa-amount">{item.tarifa} {item.raw.currency || ''}</span></td>
+                      <td className="cell-estado"><div className="estado-select-wrapper"><select className="estado-select" value={item.estado} disabled={bloqueadoPorCombate || item.estado === 'APPROVED' || actualizando === item.id}
+                        onChange={(e) => cambiarEstado(item, e.target.value)} aria-label={`Cambiar estado de ${item.codigo}`}>
+                        {STATUS_CHOICES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+                      </select></div><span className="estado-subtext">{actualizando === item.id ? 'Guardando…' : bloqueadoPorCombate ? 'Bloqueado: en combate' : item.estado === 'APPROVED' ? 'Aprobado · bloqueado' : item.estadoLabel}</span></td>
+                      <td className="cell-estado"><div className="estado-select-wrapper"><select className="estado-select" value={item.paymentStatus || ''}
+                        disabled={bloqueadoPorCombate || item.paymentStatus === 'PAID' || !item.paymentId || actualizando === `payment-${item.id}`}
+                        onChange={(e) => cambiarEstadoPago(item, e.target.value)} aria-label={`Cambiar estado de pago de ${item.codigo}`}>
+                        <option value={item.paymentStatus || ''}>{item.paymentStatusLabel}</option>
+                        {item.paymentStatus !== 'PAID' && <option value="PAID">Pagado</option>}
+                        {item.paymentStatus !== 'REJECTED' && <option value="REJECTED">Rechazado</option>}
+                      </select></div><span className="estado-subtext">{actualizando === `payment-${item.id}` ? 'Guardando…' : bloqueadoPorCombate ? 'Bloqueado: en combate' : item.paymentStatus === 'PAID' ? 'Pagado · bloqueado' : item.paymentStatusLabel}</span></td>
+                    </tr>;
+                  })}</tbody></table>}
         </section>
       </div>
-
-      {/* Modal exclusivo de administración para resultados en tiempo real */}
-      <ResultadosModal
-        isOpen={modalResultadosAbierto}
-        onClose={() => setModalResultadosAbierto(false)}
-      />
+      <ResultadosModal isOpen={modalResultadosAbierto} onClose={() => setModalResultadosAbierto(false)} />
+      {crearAdmin && <AdminCreateForm onClose={() => setCrearAdmin(false)} />}
+      {crearFormulario && <RegistrationFormBuilder onClose={() => setCrearFormulario(false)} />}
     </div>
   );
 }

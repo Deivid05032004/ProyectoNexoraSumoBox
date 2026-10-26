@@ -9,12 +9,13 @@
   width: 100%;
   background-color: #0c1017;
   color: #ffffff;
-  padding: 2.2rem 2rem 3rem;
+  padding: 1.5rem clamp(0.75rem, 1.5vw, 1.5rem) 3rem;
   box-sizing: border-box;
 }
 
 .admin-dashboard-container {
-  max-width: 1160px;
+  width: 100%;
+  max-width: 1900px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -196,7 +197,7 @@
   background-color: #141923;
   border: 1px solid #232a36;
   border-radius: 10px;
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .table-state-box {
@@ -212,6 +213,8 @@
 
 .admin-table {
   width: 100%;
+  min-width: 1120px;
+  table-layout: fixed;
   border-collapse: collapse;
   text-align: left;
 }
@@ -221,7 +224,7 @@
 }
 
 .admin-table th {
-  padding: 1rem 1.4rem;
+  padding: 1rem 0.85rem;
   font-size: 0.85rem;
   font-weight: 600;
   color: #8b949e;
@@ -242,9 +245,16 @@
 }
 
 .admin-table td {
-  padding: 1.15rem 1.4rem;
+  padding: 1rem 0.85rem;
   vertical-align: top;
 }
+
+.admin-table th:nth-child(1), .admin-table td:nth-child(1) { width: 20%; }
+.admin-table th:nth-child(2), .admin-table td:nth-child(2) { width: 20%; }
+.admin-table th:nth-child(3), .admin-table td:nth-child(3) { width: 23%; }
+.admin-table th:nth-child(4), .admin-table td:nth-child(4) { width: 9%; }
+.admin-table th:nth-child(5), .admin-table td:nth-child(5),
+.admin-table th:nth-child(6), .admin-table td:nth-child(6) { width: 14%; }
 
 /* CELDAS DE TABLA ESPECÍFICAS */
 .cell-codigo .main-text,
@@ -255,6 +265,7 @@
   color: #ffffff;
   line-height: 1.25;
   margin-bottom: 0.25rem;
+  overflow-wrap: anywhere;
 }
 
 .cell-codigo .sub-text,
@@ -333,6 +344,11 @@
   border-color: #2563eb;
 }
 
+.estado-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .estado-subtext {
   display: block;
   font-size: 0.78rem;
@@ -356,7 +372,7 @@
   }
 
   .admin-table {
-    min-width: 720px;
+    min-width: 1120px;
   }
 }
 

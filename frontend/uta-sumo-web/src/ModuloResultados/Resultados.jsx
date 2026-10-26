@@ -2,42 +2,91 @@ import { useEffect, useState, useRef } from 'react';
 import {
   obtenerResultadosTorneo,
   EVENTO_RESULTADOS_ACTUALIZADOS,
+  EVENTO_CRONOMETRO_ACTUALIZADO,
+  obtenerConfiguracionCronometro,
   suscribirBroadcastChannel,
+  suscribirWebSocketCombate,
   iniciarPolling,
+  obtenerTablaPosiciones,
 } from './services/resultadosApi';
 import './Resultados.css';
 
-export default function Resultados() {
-  const [combate, setCombate] = useState(null);
-  const [cargando, setCargando] = useState(true);
+function FullscreenPanel({ className = '', label, children }) {
+  const panelRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  useEffect(() => {
+    const syncFullscreen = () => setIsFullscreen(document.fullscreenElement === panelRef.current);
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreen);
+  }, []);
+
+  async function toggleFullscreen() {
+    const panel = panelRef.current;
+    if (!panel) return;
+    try {
+      if (document.fullscreenElement === panel) await document.exitFullscreen();
+      else {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        await panel.requestFullscreen();
+      }
+    } catch (error) {
+      console.error(`No se pudo cambiar a pantalla completa (${label}):`, error);
+    }
+  }
+
+  return <section ref={panelRef} className={`live-view-panel ${className} ${isFullscreen ? 'is-panel-fullscreen' : ''}`}>
+    <button type="button" className="btn-fullscreen-toggle" onClick={toggleFullscreen}
+      title={isFullscreen ? `Salir de pantalla completa: ${label}` : `Pantalla completa: ${label}`}>
+      {isFullscreen ? 'Salir de pantalla completa' : '⛶ Pantalla completa'}
+    </button>
+    {children}
+  </section>;
+}
+
+export default function Resultados() {
+  const [combate, setCombate] = useState(null);
+  const [posiciones, setPosiciones] = useState([]);
+  const [errorPosiciones, setErrorPosiciones] = useState('');
+  const [cargando, setCargando] = useState(true);
+
   // Estados del Cronómetro (3:00 estándar de sumo)
-  const [tiempoRestante, setTiempoRestante] = useState(180);
-  const [cronometroCorriendo, setCronometroCorriendo] = useState(true);
+  const [tiempoRestante, setTiempoRestante] = useState(() => obtenerConfiguracionCronometro().seconds);
+  const [cronometroHabilitado, setCronometroHabilitado] = useState(() => obtenerConfiguracionCronometro().enabled);
+  const [cronometroCorriendo, setCronometroCorriendo] = useState(false);
 
   // Estados de Animaciones
   const [animandoEspadas, setAnimandoEspadas] = useState(false);
   const [celebrandoGanador, setCelebrandoGanador] = useState(null); // Robot ganador
 
-  const containerRef = useRef(null);
   const ultimoEstadoRef = useRef('');
   const ultimoGanadorRef = useRef('');
 
-  const toggleFullscreen = () => {
-    const elem = containerRef.current || document.documentElement;
-    if (!document.fullscreenElement) {
-      if (elem.requestFullscreen) {
-        elem.requestFullscreen().catch(() => {});
-      } else if (elem.webkitRequestFullscreen) {
-        elem.webkitRequestFullscreen();
-      }
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen().catch(() => {});
-      }
+  useEffect(() => {
+    const eventId = combate?.event_id;
+    if (!eventId) {
+      setPosiciones([]);
+      return undefined;
     }
-  };
+    let alive = true;
+    const loadStandings = async () => {
+      try {
+        const rows = await obtenerTablaPosiciones(eventId);
+        if (alive) {
+          setPosiciones(rows);
+          setErrorPosiciones('');
+        }
+      } catch (error) {
+        if (alive) setErrorPosiciones(error.message || 'No se pudo cargar la tabla de posiciones.');
+      }
+    };
+    loadStandings();
+    const timer = window.setInterval(loadStandings, 4000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [combate?.event_id, combate?.robotA?.puntos, combate?.robotB?.puntos, combate?.estado]);
 
   const activarAnimacionEspadas = () => {
     setAnimandoEspadas(true);
@@ -51,8 +100,8 @@ export default function Resultados() {
   };
 
   const reiniciarCronometro = () => {
-    setTiempoRestante(180);
-    setCronometroCorriendo(combate?.estado === 'En combate');
+    setTiempoRestante(obtenerConfiguracionCronometro().seconds);
+    setCronometroCorriendo(cronometroHabilitado && combate?.estado === 'En combate');
   };
 
   const formatTiempo = (segundos) => {
@@ -78,7 +127,7 @@ export default function Resultados() {
       // Animación de espadas al iniciar el combate
       if (res.estado === 'En combate' && ultimoEstadoRef.current !== 'En combate') {
         activarAnimacionEspadas();
-        setCronometroCorriendo(true);
+        setCronometroCorriendo(cronometroHabilitado);
       } else if (res.estado !== 'En combate') {
         setCronometroCorriendo(false);
       }
@@ -116,6 +165,12 @@ export default function Resultados() {
       procesarDatosCombate(datos);
     });
 
+    // El WebSocket del backend difunde cambios entre navegadores/dispositivos.
+    // El polling permanece como respaldo si la conexión no está disponible.
+    const { stop: stopWebSocket } = suscribirWebSocketCombate((datos) => {
+      procesarDatosCombate(datos);
+    });
+
     // CAPA 2: Evento DOM — misma pestaña (disparado por guardarResultadosTorneo).
     const handleEventoDom = (evento) => {
       // CustomEvent con detail lleva los datos ya cargados; evita una nueva lectura de localStorage.
@@ -129,9 +184,20 @@ export default function Resultados() {
 
     window.addEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleEventoDom);
 
+    const handleTimerConfig = (event) => {
+      const config = event.detail || obtenerConfiguracionCronometro();
+      setCronometroHabilitado(config.enabled);
+      setTiempoRestante(config.seconds);
+      setCronometroCorriendo(Boolean(config.enabled && ultimoEstadoRef.current === 'En combate'));
+    };
+    window.addEventListener(EVENTO_CRONOMETRO_ACTUALIZADO, handleTimerConfig);
+
     // CAPA 3: Evento 'storage' del navegador — detecta cambios en localStorage
     // hechos desde otra pestaña en navegadores que no soporten BroadcastChannel.
     const handleStorage = (e) => {
+      if (e.key === 'uta.torneo.cronometro' && e.newValue) {
+        try { handleTimerConfig({ detail: JSON.parse(e.newValue) }); } catch { /* Ignora valor inválido */ }
+      }
       if (e.key === 'uta.torneo.resultados' && e.newValue) {
         try {
           const datos = JSON.parse(e.newValue);
@@ -154,11 +220,13 @@ export default function Resultados() {
     return () => {
       activo = false;
       destroyBroadcast();
+      stopWebSocket();
       window.removeEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleEventoDom);
+      window.removeEventListener(EVENTO_CRONOMETRO_ACTUALIZADO, handleTimerConfig);
       window.removeEventListener('storage', handleStorage);
       stopPolling();
     };
-  }, []);
+  }, [cronometroHabilitado]);
 
   // Lógica del Cronómetro (cuenta regresiva de 3 minutos)
   useEffect(() => {
@@ -172,28 +240,6 @@ export default function Resultados() {
       if (intervalo) clearInterval(intervalo);
     };
   }, [cronometroCorriendo, tiempoRestante]);
-
-  // Manejo de Pantalla Completa (Full Screen API)
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-
-    const handleKeyDown = (e) => {
-      // Tecla 'F' para alternar pantalla completa
-      if ((e.key === 'f' || e.key === 'F') && !e.target.matches('input, textarea, select')) {
-        toggleFullscreen();
-      }
-    };
-
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, []);
 
   if (cargando || !combate) {
     return (
@@ -210,7 +256,7 @@ export default function Resultados() {
   const esGanadorB = combate.ganador && combate.ganador !== 'No definido' && combate.ganador === combate.robotB.nombre;
 
   return (
-    <div className={`live-scoreboard-page ${isFullscreen ? 'is-fullscreen-mode' : ''}`} ref={containerRef}>
+    <div className="live-scoreboard-page">
       {/* ========================================================
           ANIMACIÓN DE ESPADAS CHOCANDO AL INICIAR COMBATE
           ======================================================== */}
@@ -261,31 +307,9 @@ export default function Resultados() {
       )}
 
       {/* ========================================================
-          BOTÓN DE PANTALLA COMPLETA (TIPO YOUTUBE)
-          ======================================================== */}
-      <button
-        type="button"
-        className="btn-fullscreen-toggle"
-        onClick={toggleFullscreen}
-        title={isFullscreen ? 'Salir de pantalla completa (F)' : 'Pantalla completa (F)'}
-        aria-label="Alternar pantalla completa"
-      >
-        {isFullscreen ? (
-          /* Icono Minimizar / Salir */
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
-          </svg>
-        ) : (
-          /* Icono Pantalla Completa (Estilo YouTube) */
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-          </svg>
-        )}
-      </button>
-
-      {/* ========================================================
           TARJETA MASIVA PRINCIPAL DEL MARCADOR
           ======================================================== */}
+      <FullscreenPanel className="combat-fullscreen-panel" label="marcador y combate">
       <main className="live-scoreboard-card" aria-label="Marcador Oficial del Torneo">
         {/* CABECERA: TÍTULO INSTITUCIONAL Y BADGE EN VIVO */}
         <header className="scoreboard-header">
@@ -338,7 +362,7 @@ export default function Resultados() {
             <span className="giant-vs-text">VS</span>
 
             {/* CRONÓMETRO OFICIAL DE COMBATE */}
-            <div className={`combat-timer-box ${tiempoRestante === 0 ? 'timer-ended' : ''}`}>
+            {cronometroHabilitado ? <div className={`combat-timer-box ${tiempoRestante === 0 ? 'timer-ended' : ''}`}>
               <div className="timer-header-label">⏱️ CRONÓMETRO</div>
               <div className="timer-digits">{formatTiempo(tiempoRestante)}</div>
               <div className="timer-controls-row">
@@ -359,7 +383,7 @@ export default function Resultados() {
                   ↺
                 </button>
               </div>
-            </div>
+            </div> : <div className="combat-timer-box timer-disabled-label">CRONÓMETRO DESACTIVADO</div>}
 
             <span className={`match-state-badge state-${combate.estado.toLowerCase().replace(/\s+/g, '-')}`}>
               {combate.estado}
@@ -402,6 +426,23 @@ export default function Resultados() {
           </span>
         </footer>
       </main>
+      </FullscreenPanel>
+      {combate.event_id && <FullscreenPanel className="standings-fullscreen-panel" label="tabla de posiciones">
+      <section className="live-standings-card" aria-labelledby="live-standings-title">
+        <header className="live-standings-header">
+          <div><span>CLASIFICACIÓN OFICIAL</span><h2 id="live-standings-title">Tabla de posiciones</h2></div>
+          <small>Se actualiza automáticamente con los puntos registrados.</small>
+        </header>
+        {errorPosiciones ? <p className="live-standings-message" role="status">{errorPosiciones}</p>
+          : posiciones.length === 0 ? <p className="live-standings-message">Aún no hay equipos aprobados con puntos para mostrar.</p>
+            : <div className="live-standings-scroll"><table className="live-standings-table">
+              <thead><tr><th>#</th><th>Equipo</th><th>Categoría</th><th>Puntos</th></tr></thead>
+              <tbody>{posiciones.map((row) => <tr key={`${row.category_id}-${row.team_id}`}>
+                <td>{row.rank}</td><td>{row.team}</td><td>{row.category}</td><td>{row.points}</td>
+              </tr>)}</tbody>
+            </table></div>}
+      </section>
+      </FullscreenPanel>}
     </div>
   );
 }

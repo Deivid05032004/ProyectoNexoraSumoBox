@@ -43,7 +43,7 @@ export default function App() {
   }
 
   const participanteActivo = user?.role === 'PARTICIPANT';
-  const adminActivo = user?.role === 'ADMIN';
+  const adminActivo = ['ADMIN', 'EVENT_MANAGER'].includes(user?.role);
 
   return (
     <div className="app-layout">
@@ -93,12 +93,12 @@ export default function App() {
           <Route path="/admin" element={participanteActivo
             ? <Navigate to="/participante/panel" replace />
             : <LoginAdmin />} />
-          <Route path="/admin/dashboard" element={participanteActivo
-            ? <Navigate to="/participante/panel" replace />
-            : <AdminDashboard />} />
-          <Route path="/admin/panel" element={participanteActivo
-            ? <Navigate to="/participante/panel" replace />
-            : <AdminDashboard />} />
+          <Route path="/admin/dashboard" element={adminActivo
+            ? <AdminDashboard />
+            : participanteActivo ? <Navigate to="/participante/panel" replace /> : <Navigate to="/admin" replace />} />
+          <Route path="/admin/panel" element={adminActivo
+            ? <AdminDashboard />
+            : participanteActivo ? <Navigate to="/participante/panel" replace /> : <Navigate to="/admin" replace />} />
           <Route path="*" element={<Bienvenida />} />
         </Routes>
       </div>

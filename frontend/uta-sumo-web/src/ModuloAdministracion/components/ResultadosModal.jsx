@@ -1,432 +1,294 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  LISTA_EQUIPOS_OFICIALES,
-  EQUIPO_POR_DEFINIR,
-} from '../../ModuloResultados/services/resultadosApi';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { apiRequest } from '../services/adminApi';
+import { obtenerInscripciones } from '../services/adminInscripcionesApi';
+import { CRONOMETRO_INICIAL, obtenerConfiguracionCronometro, guardarConfiguracionCronometro } from '../../ModuloResultados/services/resultadosApi';
 import './ResultadosModal.css';
 
-/**
- * Tiempo de debounce (ms) para publicar cambios de texto mientras el admin escribe.
- * Los steppers de puntos y el ganador publican de forma inmediata.
- */
-const DEBOUNCE_PUBLICAR_MS = 700;
+function mapRobotRegistration(item) {
+  const row = item.raw || {};
+  return {
+    key: `${row.event_id}:${row.category_id}:${row.team_id}:${row.robot_id}`,
+    event_id: Number(row.event_id),
+    event_name: row.event_name || `Evento ${row.event_id}`,
+    category_id: Number(row.category_id),
+    category_name: item.categoria,
+    team_id: Number(row.team_id),
+    team_name: row.team_name || item.institucion,
+    robot_id: Number(row.robot_id),
+    robot_name: row.robot_name || item.robot,
+    institution_name: item.institucion,
+  };
+}
+
+function samePair(combat, left, right) {
+  return combat?.active && combat.event_id === left.event_id && combat.category_id === left.category_id
+    && combat.team_id_a === left.team_id && combat.robot_id_a === left.robot_id
+    && combat.team_id_b === right.team_id && combat.robot_id_b === right.robot_id;
+}
 
 export default function ResultadosModal({ isOpen, onClose }) {
-  const [combate, setCombate] = useState(null);
-  const [guardando, setGuardando] = useState(false);
-  const [notificacion, setNotificacion] = useState('');
-  const [indicadorSync, setIndicadorSync] = useState(''); // '' | 'sincronizando' | 'ok'
+  const [robots, setRobots] = useState([]);
+  const [sideA, setSideA] = useState('');
+  const [sideB, setSideB] = useState('');
+  const [creatingCombat, setCreatingCombat] = useState(false);
+  const [combat, setCombat] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [timerEnabled, setTimerEnabled] = useState(CRONOMETRO_INICIAL.enabled);
+  const [timerMinutes, setTimerMinutes] = useState(Math.floor(CRONOMETRO_INICIAL.seconds / 60));
+  const [timerSeconds, setTimerSeconds] = useState(CRONOMETRO_INICIAL.seconds % 60);
+  const lastPairRef = useRef('');
+  const combatRef = useRef(null);
 
-  const debounceTimerRef = useRef(null);
+  const robotByKey = useMemo(() => new Map(robots.map((robot) => [robot.key, robot])), [robots]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    async function cargar() {
-      try {
-        const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/competition/combate-actual`);
-        if (!response.ok) throw new Error('Error cargando el combate actual');
-        const res = await response.json();
-        setCombate(res);
-      } catch (error) {
-        console.error('Error al cargar el combate actual:', error);
+    combatRef.current = combat;
+  }, [combat]);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const [registrations, current] = await Promise.all([
+        obtenerInscripciones(),
+        apiRequest('/api/v1/competition/combate-actual'),
+      ]);
+      const approved = registrations
+        .filter((item) => item.estado === 'APPROVED')
+        .map(mapRobotRegistration)
+        .filter((robot) => Number.isFinite(robot.event_id) && Number.isFinite(robot.category_id)
+          && Number.isFinite(robot.team_id) && Number.isFinite(robot.robot_id));
+      const unique = [...new Map(approved.map((robot) => [robot.key, robot])).values()];
+      setRobots(unique);
+      setCombat(current);
+      combatRef.current = current;
+      if (current?.active) {
+        const a = unique.find((robot) => robot.event_id === current.event_id && robot.category_id === current.category_id
+          && robot.team_id === current.team_id_a && robot.robot_id === current.robot_id_a);
+        const b = unique.find((robot) => robot.event_id === current.event_id && robot.category_id === current.category_id
+          && robot.team_id === current.team_id_b && robot.robot_id === current.robot_id_b);
+        if (a) setSideA(a.key);
+        if (b) setSideB(b.key);
       }
-    }
-    cargar();
-    return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    };
-  }, [isOpen]);
-
-  // ─── PUBLICACIÓN EN TIEMPO REAL ─────────────────────────────────────────
-  /**
-   * Publica el combate al BroadcastChannel e localStorage.
-   * - inmediato=true  → sin debounce (steppers, ganador, estado)
-   * - inmediato=false → con debounce (campos de texto mientras se escribe)
-   */
-  // ─── PUBLICACIÓN EN TIEMPO REAL AL BACKEND ────────────────────────────────
-
-const publicarEnVivo = useCallback((datosCombate, inmediato = false) => {
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-
-    const ejecutar = async () => {
-      setIndicadorSync('sincronizando');
-      try {
-        const token = sessionStorage.getItem('adminToken'); // O donde guardes tu token
-        const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/competition/combate-actual`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(datosCombate)
-        });
-
-        if (response.ok) {
-          setIndicadorSync('ok');
-          setTimeout(() => setIndicadorSync(''), 1400);
-        }
-      } catch (error) {
-        console.error("Error al sincronizar en vivo:", error);
-        setIndicadorSync('');
-      }
-    };
-
-    if (inmediato) {
-      ejecutar();
-    } else {
-      debounceTimerRef.current = setTimeout(ejecutar, DEBOUNCE_PUBLICAR_MS);
+      if (!unique.length) setError('No hay robots con inscripción APROBADA disponibles para el marcador.');
+    } catch (err) {
+      setError(err.message || 'No se pudieron cargar los robots aprobados.');
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  // Botón explícito: cancela debounce, publica una última vez y cierra
-  const handleGuardar = async (e) => {
-    e?.preventDefault();
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    setGuardando(true);
-    try {
-      const token = sessionStorage.getItem('adminToken');
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/competition/combate-actual`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify(combate)
-      });
-      
-      if (!response.ok) throw new Error('Error guardando en backend');
+  useEffect(() => {
+    if (isOpen) {
+      loadData();
+      const config = obtenerConfiguracionCronometro();
+      setTimerEnabled(config.enabled);
+      setTimerMinutes(Math.floor(config.seconds / 60));
+      setTimerSeconds(config.seconds % 60);
+    }
+  }, [isOpen, loadData]);
 
-      setNotificacion('¡Combate publicado en pantalla gigante con éxito!');
-      setTimeout(() => {
-        setNotificacion('');
-        onClose();
-      }, 900);
-    } catch (error) {
-      console.error("Error al guardar:", error);
-      setNotificacion('Error al guardar el combate en el servidor.');
+  function saveTimerConfig() {
+    const seconds = Math.max(1, Number(timerMinutes || 0) * 60 + Number(timerSeconds || 0));
+    guardarConfiguracionCronometro({ enabled: timerEnabled, seconds });
+    setNotice(`Cronómetro ${timerEnabled ? 'activado' : 'desactivado'}${timerEnabled ? ` · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : ''}.`);
+    setError('');
+  }
+
+  const activatePair = useCallback(async (leftKey, rightKey) => {
+    const left = robotByKey.get(leftKey);
+    const right = robotByKey.get(rightKey);
+    if (!left || !right || saving) return;
+    if (left.team_id === right.team_id) {
+      setError('Selecciona robots de dos equipos distintos.');
+      return;
+    }
+    if (left.event_id !== right.event_id || left.category_id !== right.category_id) {
+      setError('Los robots deben pertenecer al mismo evento y categoría.');
+      return;
+    }
+    const pairKey = `${left.key}|${right.key}`;
+    if (lastPairRef.current === pairKey) return;
+    lastPairRef.current = pairKey;
+    setSaving(true);
+    setError('');
+    setNotice('Preparando combate…');
+    try {
+      const current = combatRef.current;
+      if (samePair(current, left, right)) {
+        setNotice('Este combate ya está activo.');
+        return;
+      }
+
+      // The backend only accepts scores for persisted competition matches. Finish an
+      // existing live match before replacing its ActiveCombat pointer.
+      if (current?.active && current.match_id && ['EN_VIVO', 'PAUSADO'].includes(current.estado_code)) {
+        await apiRequest('/api/v1/competition/combate-actual', {
+          method: 'PUT',
+          body: JSON.stringify({ match_id: current.match_id, status: 'FINALIZADO' }),
+        });
+      }
+
+      const roundsResponse = await apiRequest(
+        `/api/v1/events/${left.event_id}/rounds?category_id=${left.category_id}&page=1&limit=100`,
+      );
+      const rounds = roundsResponse.items || [];
+      const roundNumber = rounds.reduce((max, round) => Math.max(max, Number(round.round_number) || 0), 0) + 1;
+      const round = await apiRequest(`/api/v1/events/${left.event_id}/rounds`, {
+        method: 'POST',
+        body: JSON.stringify({ category_id: left.category_id, round_number: roundNumber, name: `Marcador manual ${roundNumber}` }),
+      });
+      const match = await apiRequest(`/api/v1/events/${left.event_id}/matches`, {
+        method: 'POST',
+        body: JSON.stringify({ round_id: round.id, match_number: 1, team_ids: [left.team_id, right.team_id], robot_ids: [left.robot_id, right.robot_id] }),
+      });
+      const snapshot = await apiRequest('/api/v1/competition/combate-actual', {
+        method: 'PUT',
+        body: JSON.stringify({ match_id: match.match_id, status: 'PROGRAMADO' }),
+      });
+      setCombat(snapshot);
+      combatRef.current = snapshot;
+      setNotice(`Combate creado como pendiente: ${snapshot.robot_a} vs ${snapshot.robot_b}. Cambia el estado desde el selector del combate.`);
+    } catch (err) {
+      lastPairRef.current = '';
+      setError(err.message || 'No se pudo activar el combate.');
+      setNotice('');
     } finally {
-      setGuardando(false);
+      setSaving(false);
+    }
+  }, [robotByKey, saving]);
+
+  async function createCombat() {
+    if (!sideA || !sideB || creatingCombat || saving) return;
+    setCreatingCombat(true);
+    try {
+      await activatePair(sideA, sideB);
+    } finally {
+      setCreatingCombat(false);
+    }
+  }
+
+  async function changeCombatStatus(status) {
+    const current = combatRef.current;
+    if (!current?.match_id || saving || status === current.estado_code) return;
+    setSaving(true);
+    setError('');
+    try {
+      const snapshot = await apiRequest('/api/v1/competition/combate-actual', {
+        method: 'PUT',
+        body: JSON.stringify({ match_id: current.match_id, status }),
+      });
+      setCombat(snapshot);
+      combatRef.current = snapshot;
+      setNotice(`Estado del combate actualizado: ${snapshot.estado}.`);
+    } catch (err) {
+      setError(err.message || 'No se pudo cambiar el estado del combate.');
+    } finally { setSaving(false); }
+  }
+
+  function handleRobotSelection(side, key) {
+    lastPairRef.current = '';
+    if (side === 'A') setSideA(key);
+    else setSideB(key);
+  }
+
+  const updateScore = async (side, delta) => {
+    const current = combatRef.current;
+    if (!current?.active || !current.match_id || saving) return;
+    const scoreA = Math.max(0, Number(current.puntaje_a || 0) + (side === 'A' ? delta : 0));
+    const scoreB = Math.max(0, Number(current.puntaje_b || 0) + (side === 'B' ? delta : 0));
+    setSaving(true);
+    setError('');
+    try {
+      const snapshot = await apiRequest('/api/v1/competition/combate-actual', {
+        method: 'PUT',
+        body: JSON.stringify({
+          match_id: current.match_id,
+          score_a: scoreA,
+          score_b: scoreB,
+          reason: 'Actualización manual del marcador',
+        }),
+      });
+      setCombat(snapshot);
+      combatRef.current = snapshot;
+      setNotice(`Marcador sincronizado: ${snapshot.puntaje_a} – ${snapshot.puntaje_b}.`);
+    } catch (err) {
+      setError(err.message || 'No se pudo sincronizar el puntaje.');
+    } finally {
+      setSaving(false);
     }
   };
 
-  // ─── MANEJADORES ────────────────────────────────────────────────────────
+  if (!isOpen) return null;
+  const robotOption = (robot) => `${robot.robot_name} · ${robot.team_name} · ${robot.event_name} / ${robot.category_name}`;
+  const active = combat?.active;
+  const hasCombat = Boolean(combat?.match_id);
 
-  const handleQuickSelectRobot = (lado, robotNombre) => {
-    const encontrado = LISTA_EQUIPOS_OFICIALES.find((e) => e.nombre === robotNombre) || EQUIPO_POR_DEFINIR;
-    setCombate((prev) => {
-      const copia = { ...prev };
-      copia[lado] = {
-        ...copia[lado],
-        nombre: encontrado.nombre,
-        institucion: encontrado.institucion,
-      };
-      if (
-        copia.ganador &&
-        copia.ganador !== 'No definido' &&
-        copia.ganador !== 'Empate' &&
-        copia.ganador !== copia.robotA.nombre &&
-        copia.ganador !== copia.robotB.nombre
-      ) {
-        copia.ganador = 'No definido';
-      }
-      publicarEnVivo(copia);
-      return copia;
-    });
-  };
-
-  // Campos de texto: debounce para no publicar en cada tecla
-  const handleRobotFieldChange = (lado, campo, valor) => {
-    setCombate((prev) => {
-      const nuevo = { ...prev, [lado]: { ...prev[lado], [campo]: valor } };
-      publicarEnVivo(nuevo); // con debounce
-      return nuevo;
-    });
-  };
-
-  // Steppers de puntos: publicación INMEDIATA (el juez necesita ver el marcador al instante)
-  const handlePuntosChange = (lado, delta) => {
-    setCombate((prev) => {
-      const nuevo = Math.max(0, (prev[lado].puntos || 0) + delta);
-      const actualizado = { ...prev, [lado]: { ...prev[lado], puntos: nuevo } };
-      publicarEnVivo(actualizado, true); // inmediato
-      return actualizado;
-    });
-  };
-
-  // Estado del combate: publicación inmediata
-  const handleEstadoChange = (nuevoEstado) => {
-    setCombate((prev) => {
-      const nuevo = { ...prev, estado: nuevoEstado };
-      publicarEnVivo(nuevo, true);
-      return nuevo;
-    });
-  };
-
-  // Ganador: publicación inmediata (dispara animación de victoria en /resultados)
-  const handleGanadorChange = (nuevoGanador) => {
-    setCombate((prev) => {
-      const nuevo = {
-        ...prev,
-        ganador: nuevoGanador,
-        estado: nuevoGanador && nuevoGanador !== 'No definido' ? 'Finalizado' : prev.estado,
-      };
-      publicarEnVivo(nuevo, true);
-      return nuevo;
-    });
-  };
-
-  if (!isOpen || !combate) return null;
-
-  
-  const opcionesGanador = [
-    'No definido',
-    combate.robotA.nombre,
-    combate.robotB.nombre,
-    'Empate',
-  ].filter(Boolean);
-
-  return (
-    <div className="resultados-modal-overlay" onClick={onClose} role="dialog" aria-modal="true">
-      <div className="resultados-modal-container" onClick={(e) => e.stopPropagation()}>
-        {/* HEADER DEL FORMULARIO */}
-        <div className="modal-header">
-          <div>
-            <span className="modal-badge-live">Panel de Jueces Oficial</span>
-            <h2>Cargar / Actualizar Combate Actual</h2>
-            <p>
-              Actualiza los nombres, instituciones y puntajes para proyectarlos inmediatamente en la pantalla gigante de <code>/resultados</code>.
-            </p>
+  return <div className="resultados-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="manual-score-title">
+    <section className="resultados-modal-container">
+      <header className="modal-header">
+        <div><span className="modal-badge-live">Marcador en vivo</span><h2 id="manual-score-title">Combate manual</h2>
+          <p>Elige dos robots aprobados. La selección crea y activa una ronda/combate en el backend.</p></div>
+        <button type="button" className="modal-close-btn" onClick={onClose} aria-label="Cerrar">×</button>
+      </header>
+      {error && <div className="manual-score-alert" role="alert">{error}</div>}
+      {notice && <div className="manual-score-notice" role="status">{notice}</div>}
+      {loading ? <div className="table-state-box">Cargando inscripciones aprobadas…</div> : <>
+        <div className="modal-body single-match-form">
+          <section className="timer-admin-settings" aria-label="Configuración del cronómetro">
+            <label className="timer-admin-toggle"><input type="checkbox" checked={timerEnabled} onChange={(event) => setTimerEnabled(event.target.checked)} />
+              <span>Usar cronómetro en este combate</span></label>
+            <label className="timer-admin-field">Minutos<input type="number" min="0" max="99" value={timerMinutes} disabled={!timerEnabled}
+              onChange={(event) => setTimerMinutes(Math.min(99, Math.max(0, Number(event.target.value))))} /></label>
+            <label className="timer-admin-field">Segundos<input type="number" min="0" max="59" value={timerSeconds} disabled={!timerEnabled}
+              onChange={(event) => setTimerSeconds(Math.min(59, Math.max(0, Number(event.target.value))))} /></label>
+            <button type="button" className="btn-modal-secondary" onClick={saveTimerConfig}>Aplicar tiempo</button>
+            <small>Se aplica en las pantallas de resultados abiertas en este navegador.</small>
+          </section>
+          <div className="competitors-duel-form">
+            <section className="corner-form-card red-corner-form">
+              <div className="corner-header-badge red-badge">Lado A · Esquina roja</div>
+              <label className="form-field"><span>Robot aprobado</span><select className="select-combo-quick" value={sideA}
+                onChange={(event) => handleRobotSelection('A', event.target.value)} disabled={saving || !robots.length}>
+                <option value="">Seleccionar robot…</option>{robots.map((robot) => <option key={robot.key} value={robot.key}>{robotOption(robot)}</option>)}
+              </select></label>
+              <div className="manual-score-points"><button type="button" className="btn-score-stepper" onClick={() => updateScore('A', -1)} disabled={!active || saving}>−</button>
+                <strong>{active ? combat.puntaje_a : 0}</strong><button type="button" className="btn-score-stepper" onClick={() => updateScore('A', 1)} disabled={!active || saving}>+</button></div>
+            </section>
+            <div className="vs-center-tag">VS</div>
+            <section className="corner-form-card blue-corner-form">
+              <div className="corner-header-badge blue-badge">Lado B · Esquina azul</div>
+              <label className="form-field"><span>Robot aprobado</span><select className="select-combo-quick" value={sideB}
+                onChange={(event) => handleRobotSelection('B', event.target.value)} disabled={saving || !robots.length}>
+                <option value="">Seleccionar robot…</option>{robots.map((robot) => <option key={robot.key} value={robot.key}>{robotOption(robot)}</option>)}
+              </select></label>
+              <div className="manual-score-points"><button type="button" className="btn-score-stepper" onClick={() => updateScore('B', -1)} disabled={!active || saving}>−</button>
+                <strong>{active ? combat.puntaje_b : 0}</strong><button type="button" className="btn-score-stepper" onClick={() => updateScore('B', 1)} disabled={!active || saving}>+</button></div>
+            </section>
           </div>
-          <button type="button" className="modal-close-btn" onClick={onClose} aria-label="Cerrar modal">
-            ✕
-          </button>
+          <div className="create-combat-action">
+            <button type="button" className="btn-create-combat" onClick={createCombat}
+              disabled={saving || creatingCombat || !sideA || !sideB}>
+              {creatingCombat || saving ? 'Creando combate…' : 'Crear combate'}
+            </button>
+            <span>Selecciona los dos robots y confirma para crear la ronda y el combate.</span>
+          </div>
+          {hasCombat && <label className="combat-state-control">Estado
+            <select className="combat-state-split" value={combat.estado_code} onChange={(event) => changeCombatStatus(event.target.value)} disabled={saving || ['FINALIZADO', 'CANCELADO'].includes(combat.estado_code)}>
+              {combat.estado_code === 'PROGRAMADO' && <><option value="PROGRAMADO">Pendiente</option><option value="EN_VIVO">En combate</option><option value="CANCELADO">Cancelado</option></>}
+              {combat.estado_code === 'EN_VIVO' && <><option value="EN_VIVO">En combate</option><option value="PAUSADO">Pausado</option><option value="FINALIZADO">Finalizado</option><option value="CANCELADO">Cancelado</option></>}
+              {combat.estado_code === 'PAUSADO' && <><option value="PAUSADO">Pausado</option><option value="EN_VIVO">En combate</option><option value="FINALIZADO">Finalizado</option><option value="CANCELADO">Cancelado</option></>}
+              {['FINALIZADO', 'CANCELADO'].includes(combat.estado_code) && <option value={combat.estado_code}>{combat.estado}</option>}
+            </select>
+          </label>}
+          {hasCombat && <p className="manual-score-match">{active ? 'Combate' : 'Último combate'}: <strong>{combat.robot_a}</strong> ({combat.equipo_a}) vs <strong>{combat.robot_b}</strong> ({combat.equipo_b}) · {combat.estado}</p>}
+          {!hasCombat && robots.length > 0 && <p className="manual-score-hint">Selecciona un robot en ambos lados para crear el combate.</p>}
         </div>
-
-        {notificacion && (
-          <div className="modal-alert-success" role="status">
-            ✓ {notificacion}
-          </div>
-        )}
-
-        <form onSubmit={handleGuardar} className="modal-body single-match-form">
-          {/* SECCIÓN 1: ESTADO DEL COMBATE */}
-          <div className="form-section-box">
-            <div className="form-field">
-              <label>Estado del Combate en Pantalla</label>
-              <select
-                value={combate.estado}
-                onChange={(e) => setCombate({ ...combate, estado: e.target.value })}
-                className="select-highlight-state"
-              >
-                <option value="En combate">🔴 En combate (Activa cronómetro y marcador en vivo)</option>
-                <option value="Finalizado">🟢 Finalizado (Habilita declaración de ganador)</option>
-                <option value="Pausa técnica">🟡 Pausa técnica / Calentamiento</option>
-              </select>
-            </div>
-          </div>
-
-          {/* SECCIÓN 2: COMPETIDORES Y PUNTUACIÓN */}
-          <div className="form-section-box">
-            <h3 className="form-section-title">⚔️ Competidores y Puntuación</h3>
-
-            <div className="competitors-duel-form">
-              {/* ROBOT A (ESQUINA ROJA) */}
-              <div className="corner-form-card red-corner-form">
-                <div className="corner-header-badge red-badge">ESQUINA ROJA (ROBOT A)</div>
-
-                <div className="form-field">
-                  <label>Selección Rápida Oficial</label>
-                  <select
-                    value={combate.robotA.nombre}
-                    onChange={(e) => handleQuickSelectRobot('robotA', e.target.value)}
-                    className="select-combo-quick"
-                  >
-                    {LISTA_EQUIPOS_OFICIALES.map((eq) => (
-                      <option key={`a-${eq.id}-${eq.nombre}`} value={eq.nombre}>
-                        {eq.nombre === 'Por definir' ? '⚪ Por definir' : `🤖 ${eq.nombre}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="form-field">
-                  <label>Nombre del Robot</label>
-                  <input
-                    type="text"
-                    value={combate.robotA.nombre}
-                    onChange={(e) => handleRobotFieldChange('robotA', 'nombre', e.target.value)}
-                    required
-                    placeholder="Ej. Katana II"
-                  />
-                </div>
-
-                <div className="form-field">
-                  <label>Institución / Club</label>
-                  <input
-                    type="text"
-                    value={combate.robotA.institucion}
-                    onChange={(e) => handleRobotFieldChange('robotA', 'institucion', e.target.value)}
-                    required
-                    placeholder="Ej. UTA · FISEI"
-                  />
-                </div>
-
-                <div className="score-control-block">
-                  <label>Puntos del Robot A</label>
-                  <div className="score-buttons-row">
-                    <button
-                      type="button"
-                      className="btn-score-stepper"
-                      onClick={() => handlePuntosChange('robotA', -1)}
-                      title="Restar 1 punto"
-                    >
-                      -
-                    </button>
-                    <input
-                      type="number"
-                      min="0"
-                      max="99"
-                      value={combate.robotA.puntos}
-                      onChange={(e) => handleRobotFieldChange('robotA', 'puntos', Math.max(0, parseInt(e.target.value, 10) || 0))}
-                      className="input-giant-score"
-                    />
-                    <button
-                      type="button"
-                      className="btn-score-stepper"
-                      onClick={() => handlePuntosChange('robotA', 1)}
-                      title="Sumar 1 punto"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="vs-center-tag">VS</div>
-
-              {/* ROBOT B (ESQUINA AZUL) */}
-              <div className="corner-form-card blue-corner-form">
-                <div className="corner-header-badge blue-badge">ESQUINA AZUL (ROBOT B)</div>
-
-                <div className="form-field">
-                  <label>Selección Rápida Oficial</label>
-                  <select
-                    value={combate.robotB.nombre}
-                    onChange={(e) => handleQuickSelectRobot('robotB', e.target.value)}
-                    className="select-combo-quick"
-                  >
-                    {LISTA_EQUIPOS_OFICIALES.map((eq) => (
-                      <option key={`b-${eq.id}-${eq.nombre}`} value={eq.nombre}>
-                        {eq.nombre === 'Por definir' ? '⚪ Por definir' : `🤖 ${eq.nombre}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="form-field">
-                  <label>Nombre del Robot</label>
-                  <input
-                    type="text"
-                    value={combate.robotB.nombre}
-                    onChange={(e) => handleRobotFieldChange('robotB', 'nombre', e.target.value)}
-                    required
-                    placeholder="Ej. Tornado"
-                  />
-                </div>
-
-                <div className="form-field">
-                  <label>Institución / Club</label>
-                  <input
-                    type="text"
-                    value={combate.robotB.institucion}
-                    onChange={(e) => handleRobotFieldChange('robotB', 'institucion', e.target.value)}
-                    required
-                    placeholder="Ej. Colegio La Salle"
-                  />
-                </div>
-
-                <div className="score-control-block">
-                  <label>Puntos del Robot B</label>
-                  <div className="score-buttons-row">
-                    <button
-                      type="button"
-                      className="btn-score-stepper"
-                      onClick={() => handlePuntosChange('robotB', -1)}
-                      title="Restar 1 punto"
-                    >
-                      -
-                    </button>
-                    <input
-                      type="number"
-                      min="0"
-                      max="99"
-                      value={combate.robotB.puntos}
-                      onChange={(e) => handleRobotFieldChange('robotB', 'puntos', Math.max(0, parseInt(e.target.value, 10) || 0))}
-                      className="input-giant-score"
-                    />
-                    <button
-                      type="button"
-                      className="btn-score-stepper"
-                      onClick={() => handlePuntosChange('robotB', 1)}
-                      title="Sumar 1 punto"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* SECCIÓN 3: GANADOR Y DETALLES */}
-          <div className="form-section-box">
-            <h3 className="form-section-title">🏆 Declaración de Ganador y Observaciones</h3>
-            <div className="meta-grid-2">
-              <div className="form-field">
-                <label>Ganador Declarado</label>
-                <select
-                  value={combate.ganador || 'No definido'}
-                  onChange={(e) => {
-                    const nuevoGanador = e.target.value;
-                    setCombate({
-                      ...combate,
-                      ganador: nuevoGanador,
-                      estado: nuevoGanador && nuevoGanador !== 'No definido' ? 'Finalizado' : combate.estado,
-                    });
-                  }}
-                  className="select-ganador-field"
-                >
-                  {opcionesGanador.map((opt) => (
-                    <option key={opt} value={opt}>
-                      {opt === 'No definido' ? '⚪ No definido / En combate' : `🏆 ${opt}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-field">
-                <label>Observaciones del Asalto (Opcional)</label>
-                <input
-                  type="text"
-                  value={combate.detalles || ''}
-                  onChange={(e) => setCombate({ ...combate, detalles: e.target.value })}
-                  placeholder="Ej. Definición por salida lateral de dohyo"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* FOOTER DEL FORMULARIO */}
-          <div className="modal-footer">
-            <button type="button" className="btn-modal-secondary" onClick={onClose} disabled={guardando}>
-              Cancelar
-            </button>
-            <button type="submit" className="btn-modal-primary" disabled={guardando}>
-              {guardando ? 'Transmitiendo...' : '⚡ Actualizar y Proyectar en Pantalla Gigante'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
+      </>}
+      <footer className="modal-footer"><button type="button" className="btn-modal-secondary" onClick={onClose}>Cerrar</button></footer>
+    </section>
+  </div>;
 }
