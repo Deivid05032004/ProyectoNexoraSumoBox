@@ -7,7 +7,11 @@ export default function LoginAdmin() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState(() => {
+    const notice = sessionStorage.getItem('uta.password_changed_message') || '';
+    sessionStorage.removeItem('uta.password_changed_message');
+    return notice;
+  });
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(event) {

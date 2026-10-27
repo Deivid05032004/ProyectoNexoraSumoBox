@@ -13,7 +13,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-from datetime import date
 from pathlib import Path
 
 from sqlalchemy import text
@@ -22,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 API_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_DIR))
 
-from app.core.security import hash_password
+from app.core.security import hash_password, verify_password
 from app.core.crypto import email_lookup_hash, encrypt_text
 from database import DB_NAME, DB_SERVER, SessionLocal
 
@@ -32,8 +31,13 @@ ACCOUNTS = (
     ("administrator.demo@example.com", "ADMIN", "Demo", "Operador administrativo"),
     ("participant.demo@example.com", "PARTICIPANT", "Demo", "Participante"),
 )
+# Development-only convenience identity. This bootstrap is restricted to the
+# local demo database. Its short, fixed password is intentionally unsuitable
+# for a shared deployment and must be changed before any shared use.
+DEFAULT_ADMIN = ("adminTics@uta.edu.ec", "ADMIN", "Admin", "UTA Tics")
+DEFAULT_ADMIN_PASSWORD = "Admin@utaTics"
 INSTITUTION = "UTA SUMO DEMO LOCAL"
-EVENT = "UTA SUMO DEMO LOCAL"
+EVENT = "UTA SUMO ROBOTICS CUP 2026"
 CATEGORY = "MINI SUMO AMATEUR RC"
 COLLECTION = API_DIR / "postman/UTA_Sumo_E2E.postman_collection.json"
 
@@ -41,7 +45,8 @@ COLLECTION = API_DIR / "postman/UTA_Sumo_E2E.postman_collection.json"
 def _local_server() -> bool:
     value = DB_SERVER.strip().lower()
     local = {".", "(local)", "localhost", "127.0.0.1", socket.gethostname().lower()}
-    return value in local or value.split("\\", 1)[0] in local
+    host = value.split(",", 1)[0].removeprefix("tcp:").strip()
+    return host in local or host.split("\\", 1)[0] in local
 
 
 def _run_postman(credentials, ids) -> int:
@@ -95,14 +100,16 @@ def main() -> None:
     db = SessionLocal()
     credentials: list[tuple[str, str, str]] = []
     try:
-        lookup_by_email = {email: email_lookup_hash(email) for email, *_ in ACCOUNTS}
+        account_specs = (*ACCOUNTS, DEFAULT_ADMIN)
+        lookup_by_email = {email: email_lookup_hash(email) for email, *_ in account_specs}
         existing = db.execute(text("""
             SELECT u.UserId,u.EmailLookupHash,r.Code FROM dbo.Users u JOIN dbo.Roles r ON r.RoleId=u.RoleId
-            WHERE u.EmailLookupHash IN (:admin,:event_manager,:administrator,:participant)
+            WHERE u.EmailLookupHash IN (:admin,:event_manager,:administrator,:participant,:default_admin)
         """), {"admin": lookup_by_email[ACCOUNTS[0][0]], "event_manager": lookup_by_email[ACCOUNTS[1][0]],
-              "administrator": lookup_by_email[ACCOUNTS[2][0]], "participant": lookup_by_email[ACCOUNTS[3][0]]}).all()
+              "administrator": lookup_by_email[ACCOUNTS[2][0]], "participant": lookup_by_email[ACCOUNTS[3][0]],
+              "default_admin": lookup_by_email[DEFAULT_ADMIN[0]]}).all()
         email_by_hash = {value: email for email, value in lookup_by_email.items()}
-        expected = {email: role for email, role, *_ in ACCOUNTS}
+        expected = {email: role for email, role, *_ in account_specs}
         if any(expected.get(email_by_hash.get(lookup)) != role for _, lookup, role in existing):
             raise SystemExit("Un correo demo reservado ya existe con otro rol; no se modificó nada.")
         existing_users = {email_by_hash[lookup]: user_id for user_id, lookup, _ in existing}
@@ -120,25 +127,24 @@ def main() -> None:
                 INSERT INTO dbo.Categories(Name,Description)
                 OUTPUT INSERTED.CategoryId VALUES (:name,N'Categoría de demostración local.')
             """), {"name": CATEGORY}).scalar_one()
-        year = date.today().year
         event_id = db.execute(text("""
-            SELECT EventId FROM dbo.Events WHERE Name=:name AND EditionYear=:year
-        """), {"name": EVENT, "year": year}).scalar_one_or_none()
+            SELECT EventId FROM dbo.Events WHERE Name=:name AND EditionYear=2026
+        """), {"name": EVENT}).scalar_one_or_none()
         if event_id is None:
-            event_id = db.execute(text("""
-                INSERT INTO dbo.Events(Name,EditionYear,RegistrationStart,RegistrationEnd,IsActive)
-                OUTPUT INSERTED.EventId VALUES (:name,:year,'2020-01-01','2099-12-31',1)
-            """), {"name": EVENT, "year": year}).scalar_one()
+            raise SystemExit(
+                "No existe el evento oficial UTA SUMO ROBOTICS CUP 2026. "
+                "Ejecute primero todas las migraciones de database/scripts."
+            )
         tariff_id = db.execute(text("""
             SELECT TOP (1) TariffId FROM dbo.Tariffs
             WHERE EventId=:event AND CategoryId=:category AND IsActive=1
             ORDER BY ValidFrom DESC,TariffId DESC
         """), {"event": event_id, "category": category_id}).scalar_one_or_none()
         if tariff_id is None:
-            tariff_id = db.execute(text("""
-                INSERT INTO dbo.Tariffs(EventId,CategoryId,Amount,ValidFrom,ValidUntil,IsActive)
-                OUTPUT INSERTED.TariffId VALUES (:event,:category,15.00,'2020-01-01','2099-12-31',1)
-            """), {"event": event_id, "category": category_id}).scalar_one()
+            raise SystemExit(
+                "El evento oficial no tiene tarifa activa para MINI SUMO AMATEUR RC. "
+                "Revise las migraciones 21 a 23."
+            )
 
         participant_id = db.execute(text("""
             SELECT ParticipantId FROM dbo.Participants p JOIN dbo.Users u ON u.UserId=p.UserId
@@ -182,6 +188,37 @@ def main() -> None:
                 """), {"first": encrypt_text(first), "last": encrypt_text(last), "institution": institution_id,
                       "user": user_id}).scalar_one()
             credentials.append((username, role, password))
+        default_admin_created = False
+        if DEFAULT_ADMIN[0] not in existing_users:
+            email, role, first, last = DEFAULT_ADMIN
+            role_id = db.execute(text("SELECT RoleId FROM dbo.Roles WHERE Code=:role"),
+                                 {"role": role}).scalar_one_or_none()
+            if role_id is None:
+                raise SystemExit("Falta el rol ADMIN; ejecute primero todas las migraciones.")
+            user_id = db.execute(text("""
+                INSERT INTO dbo.Users(EmailCiphertext,EmailLookupHash,PasswordHash,FirstName,LastName,RoleId,IsActive,MustChangePassword)
+                OUTPUT INSERTED.UserId
+                VALUES (:email,:lookup,:password,:first,:last,:role,1,1)
+            """), {"email": encrypt_text(email), "lookup": lookup_by_email[email],
+                  "password": hash_password(DEFAULT_ADMIN_PASSWORD), "first": encrypt_text(first),
+                  "last": encrypt_text(last), "role": role_id}).scalar_one()
+            db.execute(text("""
+                INSERT INTO dbo.UserSecurityAudit(TargetUserId,ActionCode,NewRoleId,NewIsActive)
+                VALUES (:target,'ACCOUNT_CREATED',:role,1)
+            """), {"target": user_id, "role": role_id})
+            default_admin_created = True
+        # An older local bootstrap may already have created the fixed account
+        # before the mandatory-change column existed. Require a change only
+        # while that account still uses the known development credential.
+        else:
+            default_admin_row = db.execute(text("""
+                SELECT UserId,PasswordHash,MustChangePassword FROM dbo.Users
+                WHERE EmailLookupHash=:lookup
+            """), {"lookup": lookup_by_email[DEFAULT_ADMIN[0]]}).mappings().first()
+            if (default_admin_row and not default_admin_row["MustChangePassword"]
+                    and verify_password(DEFAULT_ADMIN_PASSWORD, default_admin_row["PasswordHash"])):
+                db.execute(text("UPDATE dbo.Users SET MustChangePassword=1 WHERE UserId=:id"),
+                           {"id": default_admin_row["UserId"]})
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -201,6 +238,11 @@ def main() -> None:
             print(f"{role}\t{username}\t{password}")
     else:
         print("Los perfiles demo ya existían; no se cambió ninguna cuenta ni se pueden recuperar contraseñas existentes.")
+    if default_admin_created:
+        print("Cuenta ADMIN local creada: adminTics@uta.edu.ec\tAdmin@utaTics")
+        print("Es una credencial fija de desarrollo; cámbiela antes de usar una base compartida.")
+    else:
+        print("La cuenta ADMIN local ya existe; se conservó su contraseña actual.")
     if args.run_postman:
         if not credentials:
             raise SystemExit("Newman requiere las contraseñas originales; no se recuperan del hash de la base.")

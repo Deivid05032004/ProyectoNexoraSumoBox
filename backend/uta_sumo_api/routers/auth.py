@@ -10,7 +10,8 @@ from app.core.security import (create_access_token, hash_password, verify_passwo
                                password_hash_needs_upgrade)
 from app.core.crypto import decrypt_text, email_lookup_hash, encrypt_text
 from app.core.config import EMAIL_CHECK_DELIVERABILITY, GOOGLE_CLIENT_ID, SECRET_KEY
-from app.dependencies.auth import get_current_user, require_roles
+from app.core.password_policy import validate_password
+from app.dependencies.auth import get_authenticated_user, get_current_user, require_roles
 from app.schemas.auth import (
     AuthResponse, ChangePasswordRequest, GoogleAuthRequest, LoginRequest, RegisterRequest,
     UserResponse,
@@ -100,7 +101,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
                    {"id": row["UserId"], "hash": hash_password(payload.password)})
         db.commit()
     user = UserResponse(user_id=row["UserId"], email=row["Email"], username=row["Email"],
-                        first_name=row["FirstName"], last_name=row["LastName"], role=row["RoleCode"])
+                        first_name=row["FirstName"], last_name=row["LastName"], role=row["RoleCode"],
+                        must_change_password=bool(row["MustChangePassword"]))
     return AuthResponse(access_token=create_access_token(user.user_id, user.role, row["TokenVersion"]), user=user)
 
 
@@ -234,18 +236,24 @@ def link_google_account(payload: GoogleAuthRequest, user=Depends(require_roles("
 
 
 @router.get("/me", response_model=UserResponse)
-def me(user=Depends(get_current_user)):
+def me(user=Depends(get_authenticated_user)):
     return user
 
 
 @router.post("/change-password", status_code=204)
-def change_password(payload: ChangePasswordRequest, user=Depends(get_current_user),
+def change_password(payload: ChangePasswordRequest, user=Depends(get_authenticated_user),
                     db: Session = Depends(get_db)):
+    try:
+        validate_password(payload.new_password, user.get("email"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     row = db.execute(text("SELECT PasswordHash FROM dbo.Users WHERE UserId=:id"),
                      {"id": user["user_id"]}).first()
     if row is None or not verify_password(payload.current_password, row[0]):
         raise HTTPException(status_code=400, detail="La contraseña actual no es válida.")
-    db.execute(text("UPDATE dbo.Users SET PasswordHash=:hash, TokenVersion=TokenVersion+1 WHERE UserId=:id"),
+    if verify_password(payload.new_password, row[0]):
+        raise HTTPException(status_code=422, detail="La nueva contraseña debe ser diferente a la actual.")
+    db.execute(text("UPDATE dbo.Users SET PasswordHash=:hash, MustChangePassword=0, TokenVersion=TokenVersion+1 WHERE UserId=:id"),
                {"hash": hash_password(payload.new_password), "id": user["user_id"]})
     db.execute(text("""
         INSERT INTO dbo.UserSecurityAudit(TargetUserId,ActorUserId,ActionCode)

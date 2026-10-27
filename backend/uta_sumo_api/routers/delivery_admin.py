@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/v1/admin", tags=["Administración de correo"])
 @router.get("/email-outbox")
 def list_email_outbox(response: Response, status: str | None = Query(None, pattern="^(PENDING|SENT|FAILED)$"),
                       page: int = Query(1, ge=1, le=1_000_000),
-                      limit: int = Query(50, ge=1, le=100),
+                      limit: int = Query(5, ge=1, le=100),
                       _user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
     where = "WHERE DeliveryStatus=:status" if status else ""
     params = {"status": status, "offset": (page-1)*limit, "limit": limit}

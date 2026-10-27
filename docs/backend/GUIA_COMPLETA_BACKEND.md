@@ -123,6 +123,24 @@ Aplica migraciones y arranca la API desde `backend/uta_sumo_api`:
 Prueba `GET http://127.0.0.1:8000/api/v1/health`, consulta Swagger en
 `/docs` y OpenAPI en `/openapi.json`. La API local necesita SQL Server activo.
 
+Con `AUTO_BOOTSTRAP_DEMO_ACCOUNTS=true`, la migración crea también la cuenta
+ADMIN local `adminTics@uta.edu.ec` con contraseña inicial `Admin@utaTics`,
+solo si aún no existe. El aprovisionador no restablece su contraseña en
+migraciones posteriores. Es una cuenta fija de desarrollo, con una clave de 13
+caracteres que no cumple el mínimo general de 15; no se debe usar en una base
+compartida ni productiva. Cambia la contraseña luego del primer acceso mediante
+`POST /api/v1/auth/change-password` y una frase de 15 caracteres o más. La
+cuenta demo solo se aprovisiona en la instancia local UTA_SUMO_ROBOTICS_CUP.
+
+En el primer acceso, la respuesta de login informa `must_change_password=true`
+y el panel lleva a la pestaña **Seguridad de la cuenta**. La API no permite
+usar endpoints administrativos hasta que se cambie la clave. El formulario
+pide clave actual, nueva y confirmación; valida mínimo 15 caracteres y la
+política de contraseñas, registra auditoría y revoca las sesiones existentes.
+Después se vuelve a iniciar sesión con la nueva clave. Todo ADMIN puede usar
+esa pestaña más adelante. No sustituye una recuperación por correo si se
+olvida la clave actual.
+
 Para iniciar la interfaz, abre otra terminal desde la raíz del repositorio:
 
 ```powershell
@@ -492,6 +510,10 @@ probaron con TestClient contra SQL Server. Las migraciones locales **06 a 20**
 están aplicadas. El SMTP real no se probó porque requiere credenciales de un
 proveedor; el envío simulado verifica que el PDF se adjunta y el outbox pasa a
 `SENT`. Aún falta verificar una cuenta Google real con `GOOGLE_CLIENT_ID`.
+
+La migración aditiva `36_admin_password_change_required.sql` agrega la marca
+que obliga a reemplazar la contraseña inicial de la cuenta ADMIN local; se
+ejecuta con el mismo comando de migración y conserva los datos existentes.
 
 ## 12. Configuración, recibo PDF y correo
 

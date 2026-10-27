@@ -31,7 +31,7 @@ def _read_all(db, query, params=None):
 
 @router.get("/institutions")
 def institutions(response: Response, page: int = Query(1, ge=1, le=1_000_000),
-                 limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db)):
+                 limit: int = Query(5, ge=1, le=100), db: Session = Depends(get_db)):
     return _read_page(db, text("""
         SELECT InstitutionId AS id, Name AS name
         FROM dbo.Institutions WHERE IsActive=1 ORDER BY Name
@@ -53,7 +53,7 @@ def institution(institution_id: int, db: Session = Depends(get_db)):
 
 @router.get("/events")
 def events(response: Response, page: int = Query(1, ge=1, le=1_000_000),
-           limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db)):
+           limit: int = Query(5, ge=1, le=100), db: Session = Depends(get_db)):
     return _read_page(db, text("""
         SELECT EventId AS id, Name AS name, EditionYear AS edition_year, CompetitionStatus AS competition_status,
                RegistrationStart AS registration_start,
@@ -79,7 +79,7 @@ def event(event_id: int, db: Session = Depends(get_db)):
 
 @router.get("/tariffs")
 def tariffs(response: Response, event_id: int | None = None, category_id: int | None = None,
-            page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+            page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
             db: Session = Depends(get_db)):
     predicates = [
         "t.IsActive=1", "t.ValidFrom<=CONVERT(date,GETDATE())",
@@ -216,7 +216,7 @@ def create_tariff(payload: TariffInput, db: Session = Depends(get_db)):
         raise HTTPException(status_code=422, detail="La vigencia final precede al inicio.")
     exists = db.execute(text("""
         SELECT 1 FROM dbo.Events e JOIN dbo.Categories c ON c.CategoryId=:category
-        WHERE e.EventId=:event AND e.IsActive=1 AND c.IsActive=1
+        WHERE e.EventId=:event AND c.IsActive=1
     """), {"event": payload.event_id, "category": payload.category_id}).first()
     if not exists:
         raise HTTPException(status_code=422, detail="Evento o categoría inexistente/inactivo.")
@@ -241,13 +241,33 @@ def create_tariff(payload: TariffInput, db: Session = Depends(get_db)):
     return dict(row)
 
 
+@router.get("/admin/events/{event_id}/tariffs", dependencies=[Depends(require_roles("ADMIN"))])
+def admin_event_tariffs(event_id: int, response: Response,
+                        page: int = Query(1, ge=1, le=1_000_000),
+                        limit: int = Query(5, ge=1, le=100),
+                        db: Session = Depends(get_db)):
+    if db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"), {"id": event_id}).first() is None:
+        raise HTTPException(status_code=404, detail="Evento no encontrado.")
+    total = int(db.execute(text("SELECT COUNT_BIG(*) FROM dbo.Tariffs WHERE EventId=:id"),
+                           {"id": event_id}).scalar_one())
+    rows = db.execute(text("""SELECT t.TariffId AS id,t.EventId AS event_id,t.CategoryId AS category_id,
+      c.Name AS category_name,t.Amount AS amount,t.ValidFrom AS valid_from,t.ValidUntil AS valid_until,
+      t.IsActive AS is_active FROM dbo.Tariffs t JOIN dbo.Categories c ON c.CategoryId=t.CategoryId
+      WHERE t.EventId=:id ORDER BY t.CategoryId,t.ValidFrom DESC,t.TariffId DESC
+      OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY"""),
+      {"id":event_id,"offset":(page-1)*limit,"limit":limit}).mappings().all()
+    apply_pagination_headers(response,total=total,page=page,limit=limit)
+    return {"items":[dict(r) for r in rows],"page":page,"page_size":limit,
+            "total":total,"total_pages":(total+limit-1)//limit}
+
+
 @router.put("/tariffs/{tariff_id}", dependencies=[Depends(require_roles("ADMIN"))])
 def update_tariff(tariff_id: int, payload: TariffInput, db: Session = Depends(get_db)):
     if payload.valid_until and payload.valid_until < payload.valid_from:
         raise HTTPException(status_code=422, detail="La vigencia final precede al inicio.")
     related = db.execute(text("""
         SELECT 1 FROM dbo.Events e JOIN dbo.Categories c ON c.CategoryId=:category
-        WHERE e.EventId=:event AND e.IsActive=1 AND c.IsActive=1
+        WHERE e.EventId=:event AND c.IsActive=1
     """), {"event": payload.event_id, "category": payload.category_id}).first()
     if payload.is_active and not related:
         raise HTTPException(status_code=422, detail="Evento o categoría inexistente/inactivo.")

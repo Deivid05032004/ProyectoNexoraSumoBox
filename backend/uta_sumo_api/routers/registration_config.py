@@ -167,7 +167,7 @@ def update_registration_config(event_id: int, payload: RegistrationConfigUpdate,
 @router.get("/api/v1/admin/events/{event_id}/registration-config/history")
 def registration_config_history(event_id: int, response: Response,
                                  page: int = Query(1, ge=1, le=1_000_000),
-                                 limit: int = Query(50, ge=1, le=100),
+                                 limit: int = Query(5, ge=1, le=100),
                                  _user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
     if db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"), {"id": event_id}).first() is None:
         raise HTTPException(status_code=404, detail="Evento no encontrado.")

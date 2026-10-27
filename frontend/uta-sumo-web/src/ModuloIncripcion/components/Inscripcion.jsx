@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   cargarCategoriasEvento,
+  cargarFormularioEvento,
   cargarConfiguracionEvento,
   cargarDatosInscripcion,
   crearInscripcion,
@@ -38,6 +39,15 @@ function rangoRoster(minimo, maximo) {
   const min = Number(minimo ?? 0)
   const max = Number(maximo ?? min)
   return min === max ? String(min) : `${min}–${max}`
+}
+
+function validarNumerosPersonalizados(campos, respuestas) {
+  const invalido = campos.find((campo) => {
+    if (campo.type !== 'number') return false
+    const valor = respuestas[campo.id]
+    return valor !== undefined && valor !== '' && (!Number.isFinite(Number(valor)) || Number(valor) < 0)
+  })
+  return invalido ? `El campo «${invalido.label}» debe ser un número igual o mayor que cero.` : ''
 }
 
 function erroresIntegrantes(integrantes, instituciones) {
@@ -91,6 +101,8 @@ export default function Inscripcion() {
   const [datos, setDatos] = useState(null)
   const [eventoId, setEventoId] = useState('')
   const [configuracion, setConfiguracion] = useState(null)
+  const [formularioEvento, setFormularioEvento] = useState(null)
+  const [respuestasPersonalizadas, setRespuestasPersonalizadas] = useState({})
   const [categorias, setCategorias] = useState([])
   const [categoriaId, setCategoriaId] = useState('')
   const [equipo, setEquipo] = useState('')
@@ -129,14 +141,16 @@ export default function Inscripcion() {
     if (!eventoId) return undefined
     let activo = true
     setConfiguracion(null)
+    setFormularioEvento(null)
+    setRespuestasPersonalizadas({})
     setCategorias([])
     setIntegrantes([])
     setRosterCategoriaKey('')
-    Promise.all([cargarConfiguracionEvento(eventoId), cargarCategoriasEvento(eventoId)])
-      .then(([respuesta, reglasCategorias]) => {
+    Promise.all([cargarConfiguracionEvento(eventoId), cargarFormularioEvento(eventoId)])
+      .then(([respuesta, form]) => {
         if (!activo) return
         setConfiguracion(respuesta)
-        setCategorias(Array.isArray(reglasCategorias) ? reglasCategorias : [])
+        setFormularioEvento(form)
       })
       .catch((error) => activo && setErrores((actuales) => ({ ...actuales, configuracion: error.message })))
     return () => { activo = false }
@@ -159,6 +173,15 @@ export default function Inscripcion() {
   const rosterListo = Boolean(reglasCategoria && rosterCategoriaKey === rosterCategoriaActual)
   const registroAbierto = Boolean(configuracionEvento?.registration_open && configuracionEvento?.is_enabled)
   const institucionesDisponibles = (datos?.instituciones || []).filter(institucionValida)
+
+  useEffect(() => {
+    if (!eventoId || !categoriaSeleccionadaId) return undefined
+    let activo = true
+    cargarCategoriasEvento(eventoId, categoriaSeleccionadaId)
+      .then((reglas) => activo && setCategorias(Array.isArray(reglas) ? reglas : []))
+      .catch((error) => activo && setErrores((actuales) => ({ ...actuales, configuracion: error.message })))
+    return () => { activo = false }
+  }, [eventoId, categoriaSeleccionadaId])
 
   useEffect(() => {
     if (!reglasCategoria || !categoriaSeleccionadaId || rosterCategoriaKey === rosterCategoriaActual) return
@@ -234,6 +257,7 @@ export default function Inscripcion() {
       const erroresRoster = erroresIntegrantes(integrantes, institucionesDisponibles)
       if (erroresRoster.some((item) => Object.keys(item).length)) nuevosErrores.integrantes = erroresRoster
     }
+    nuevosErrores.roster ||= validarNumerosPersonalizados(formularioEvento?.fields || [], respuestasPersonalizadas)
     setErrores(nuevosErrores)
     if (Object.keys(nuevosErrores).length) {
       setPasoFormulario(nuevosErrores.evento || nuevosErrores.tarifa || nuevosErrores.configuracion ? 1 : 2)
@@ -250,6 +274,7 @@ export default function Inscripcion() {
         teamName: equipo.trim(),
         robotName: robot.trim(),
         participants: integrantes,
+        customAnswers: respuestasPersonalizadas,
       })
       setRegistro(respuesta)
     } catch (error) {
@@ -265,7 +290,12 @@ export default function Inscripcion() {
     const errorEquipo = !equipo.trim() ? 'Ingresa el nombre del equipo.' : equipo.trim().length > 30 ? 'Usa máximo 30 caracteres.' : ''
     const errorRobot = !robot.trim() ? 'Ingresa el nombre del robot.' : robot.trim().length > 30 ? 'Usa máximo 30 caracteres.' : ''
     let errorRoster = ''
+    const requiredMissing = (formularioEvento?.fields || []).some((field) => field.required
+      && (respuestasPersonalizadas[field.id] === undefined || respuestasPersonalizadas[field.id] === ''
+        || (Array.isArray(respuestasPersonalizadas[field.id]) && !respuestasPersonalizadas[field.id].length)))
     let erroresMiembros = null
+    if (requiredMissing) errorRoster = 'Completa los campos obligatorios del formulario.'
+    errorRoster ||= validarNumerosPersonalizados(formularioEvento?.fields || [], respuestasPersonalizadas)
     if (!reglasCategoria || !rosterListo) {
       errorRoster = 'Espera a que se carguen las reglas de integrantes.'
     } else {
@@ -464,12 +494,22 @@ export default function Inscripcion() {
         const participantes = integrantes.filter((item) => item.role === 'PARTICIPANT').length
         const coaches = integrantes.filter((item) => item.role === 'COACH').length
         return <div className="roster-actions">
-          <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('PARTICIPANT', 1)}>Añadir participante</button>
+          <button type="button" className="participant-mode-toggle" disabled={participantes >= Number(reglasCategoria.max_participants)} onClick={() => ajustarRoster('PARTICIPANT', 1)}>Añadir participante</button>
           {participantes > Math.max(1, reglasCategoria.min_participants) && <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('PARTICIPANT', -1)}>Quitar participante</button>}
-          <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('COACH', 1)}>Añadir coach</button>
+          <button type="button" className="participant-mode-toggle" disabled={coaches >= Number(reglasCategoria.max_coaches)} onClick={() => ajustarRoster('COACH', 1)}>Añadir coach</button>
           {coaches > reglasCategoria.min_coaches && <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('COACH', -1)}>Quitar coach</button>}
         </div>
       })()}
+
+      {(formularioEvento?.fields || []).length > 0 && <fieldset className="member-fields">
+        <legend>{formularioEvento.title || 'Datos adicionales'}</legend>
+        {formularioEvento.description && <p>{formularioEvento.description}</p>}
+        {formularioEvento.fields.map((field) => <label className="registration-builder-label" key={field.id}>{field.label}{field.required ? ' *' : ''}
+          {field.type === 'long_text' ? <textarea required={field.required} value={respuestasPersonalizadas[field.id] || ''} onChange={e=>setRespuestasPersonalizadas(v=>({...v,[field.id]:e.target.value}))} maxLength={4000}/> :
+           ['single_choice','dropdown'].includes(field.type) ? <select required={field.required} value={respuestasPersonalizadas[field.id] || ''} onChange={e=>setRespuestasPersonalizadas(v=>({...v,[field.id]:e.target.value}))}><option value="">Selecciona una opción</option>{field.options.map(option=><option key={option}>{option}</option>)}</select> :
+           field.type === 'checkboxes' ? <div>{field.options.map(option=><label key={option}><input type="checkbox" checked={(respuestasPersonalizadas[field.id] || []).includes(option)} onChange={e=>setRespuestasPersonalizadas(v=>{const current=v[field.id]||[];return {...v,[field.id]:e.target.checked?[...current,option]:current.filter(x=>x!==option)}})}/>{option}</label>)}</div> :
+           <input required={field.required} type={{email:'email',number:'number',date:'date'}[field.type] || 'text'} min={field.type==='number'?0:undefined} step={field.type==='number'?'any':undefined} value={respuestasPersonalizadas[field.id] ?? ''} onChange={e=>setRespuestasPersonalizadas(v=>({...v,[field.id]:field.type==='number'?(e.target.value===''?'':Number(e.target.value)):e.target.value}))} maxLength={field.type==='number'?undefined:4000}/>}</label>)}
+      </fieldset>}
 
       {errores.roster && <p className="form-error" role="alert">{errores.roster}</p>}
       <div className="registration-step-actions">

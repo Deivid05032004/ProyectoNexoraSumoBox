@@ -7,7 +7,7 @@ from app.core.crypto import email_lookup_hash, decrypt_text
 def find_user_for_login(db: Session, email: str):
     row = db.execute(text("""
         SELECT u.UserId, u.EmailCiphertext, u.PasswordHash, u.FirstName, u.LastName,
-               u.IsActive, u.TokenVersion, r.Code AS RoleCode
+               u.IsActive, u.TokenVersion, u.MustChangePassword, r.Code AS RoleCode
         FROM dbo.Users u JOIN dbo.Roles r ON r.RoleId=u.RoleId
         WHERE u.EmailLookupHash=:lookup
     """), {"lookup": email_lookup_hash(email)}).mappings().first()
@@ -24,6 +24,7 @@ def find_active_user(db: Session, user_id: int):
     row = db.execute(text("""
         SELECT u.UserId AS user_id, u.EmailCiphertext AS email_ciphertext,
                u.TokenVersion AS token_version,
+               u.MustChangePassword AS must_change_password,
                u.FirstName AS first_name, u.LastName AS last_name,
                r.Code AS role
         FROM dbo.Users u JOIN dbo.Roles r ON r.RoleId=u.RoleId

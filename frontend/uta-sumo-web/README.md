@@ -25,9 +25,9 @@ origin en Google Cloud Console. Reinicia Vite tras cambiar `.env`.
 
 ## Rutas y roles
 
-- `/` y `/inscripcion`: registro de participante con email/contraseña o Google.
-- `/participante`: login de participante con email/contraseña o Google.
-- `/admin`: ingreso manual de `ADMIN`, `REVIEWER` y `TREASURY`; no incluye
+- `/inscripcion`: formulario de participante; requiere autenticación.
+- `/registro` y `/participante`: creación de perfil/acceso exclusivamente con Google.
+- `/admin`: ingreso manual de `ADMIN` y `EVENT_MANAGER`; no incluye
   botón Google ni crea cuentas privilegiadas.
 
 El alta de roles privilegiados se realiza manualmente desde el backend con
@@ -39,3 +39,7 @@ mantienen en `sessionStorage` durante la sesión de pestaña.
 El funcionamiento real de Google requiere configurar un Client ID de Google
 Cloud en ambos proyectos. Sin este valor, la interfaz muestra que la función
 está pendiente de configuración y los endpoints backend responden `503`.
+
+El panel ADMIN incluye gestión de eventos, categorías/cupos y versiones de
+formularios. Los campos configurables se cargan en la inscripción y sus
+respuestas quedan cifradas y vinculadas a la versión utilizada.

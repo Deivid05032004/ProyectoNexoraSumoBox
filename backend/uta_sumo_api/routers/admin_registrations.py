@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/v1/admin/registrations", tags=["Inscripciones ad
 def list_admin_registrations(
     response: Response,
     event_id: int | None = Query(None, ge=1),
+    category_id: int | None = Query(None, ge=1),
     status: str | None = Query(None, min_length=1, max_length=30),
     payment_status: str | None = Query(None, pattern="^(PENDING|IN_REVIEW|PAID|REJECTED)$"),
     from_date: date | None = None,
@@ -26,7 +27,7 @@ def list_admin_registrations(
     payment_reference: str | None = Query(None, min_length=1, max_length=150),
     registration_code: str | None = Query(None, min_length=36, max_length=36),
     page: int = Query(1, ge=1, le=1_000_000),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(5, ge=1, le=5),
     _user=Depends(require_roles("ADMIN")),
     db: Session = Depends(get_db),
 ):
@@ -37,6 +38,9 @@ def list_admin_registrations(
     if event_id is not None:
         predicates.append("r.EventId=:event_id")
         params["event_id"] = event_id
+    if category_id is not None:
+        predicates.append("r.CategoryId=:category_id")
+        params["category_id"] = category_id
     if status:
         predicates.append("rs.Code=:registration_status")
         params["registration_status"] = status

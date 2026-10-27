@@ -211,7 +211,10 @@ def set_competition_status(event_id: int, payload: StateChange,
     previous = row[0]
     if not can_transition(previous, payload.status):
         raise HTTPException(409, f"Transición no permitida: {previous} → {payload.status}.")
-    db.execute(text("UPDATE dbo.Events SET CompetitionStatus=:status WHERE EventId=:id"),
+    db.execute(text("""UPDATE dbo.Events SET CompetitionStatus=:status,
+        IsActive=CASE WHEN :status IN ('FINISHED','CANCELLED') THEN 0
+                      WHEN :status IN ('SCHEDULED','LIVE','PAUSED') THEN 1 ELSE IsActive END
+        WHERE EventId=:id"""),
                {"status": payload.status, "id": event_id})
     if previous != payload.status:
         db.execute(text("""
@@ -219,6 +222,10 @@ def set_competition_status(event_id: int, payload: StateChange,
           VALUES(:event,:previous,:next,:actor,:reason)
         """), {"event": event_id, "previous": previous, "next": payload.status,
               "actor": user["user_id"], "reason": payload.reason.strip() if payload.reason else None})
+        db.execute(text("""INSERT dbo.EventStatusHistory(EventId,PreviousStatus,NewStatus,Reason,ActorUserId)
+          VALUES(:event,:previous,:next,:reason,:actor)"""),
+          {"event":event_id,"previous":previous,"next":payload.status,
+           "reason":payload.reason.strip() if payload.reason else None,"actor":user["user_id"]})
     db.commit()
     _broadcast_active_combat_if(db, event_id=event_id)
     return {"event_id": event_id, "previous_status": previous, "status": payload.status}
@@ -302,7 +309,7 @@ def leaderboard(event_id: int, category_id: int | None = Query(default=None, gt=
 @router.get("/events/{event_id}/scores/history")
 def score_history(event_id: int, category_id: int | None = Query(default=None, gt=0),
                   team_id: int | None = Query(default=None, gt=0), page: int = Query(1, ge=1),
-                  limit: int = Query(50, ge=1, le=100),
+                  limit: int = Query(5, ge=1, le=100),
                   db: Session = Depends(get_db)):
     rows = db.execute(text("""
       SELECT ScoreEntryId AS id,CategoryId AS category_id,TeamId AS team_id,RoundId AS round_id,
@@ -321,7 +328,7 @@ def score_history(event_id: int, category_id: int | None = Query(default=None, g
 @router.get("/events/{event_id}/scores/audit")
 def score_audit(event_id: int, category_id: int | None = Query(default=None, gt=0),
                 team_id: int | None = Query(default=None, gt=0), page: int = Query(1, ge=1),
-                limit: int = Query(50, ge=1, le=100), user=Depends(require_roles(*STAFF)),
+                limit: int = Query(5, ge=1, le=100), user=Depends(require_roles(*STAFF)),
                 db: Session = Depends(get_db)):
     rows = db.execute(text("""
       SELECT ScoreEntryId AS id,CategoryId AS category_id,TeamId AS team_id,RoundId AS round_id,
@@ -339,7 +346,7 @@ def score_audit(event_id: int, category_id: int | None = Query(default=None, gt=
 
 @router.get("/events/{event_id}/competition-status/history")
 def competition_status_history(event_id: int, page: int = Query(1, ge=1),
-                               limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db)):
+                               limit: int = Query(5, ge=1, le=100), db: Session = Depends(get_db)):
     if not db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"), {"id": event_id}).first():
         raise HTTPException(404, "Evento no encontrado.")
     total = int(db.execute(text("SELECT COUNT_BIG(*) FROM dbo.CompetitionEventStatusHistory WHERE EventId=:id"),
@@ -354,7 +361,7 @@ def competition_status_history(event_id: int, page: int = Query(1, ge=1),
 
 @router.get("/events/{event_id}/rounds")
 def list_rounds(event_id: int, category_id: int | None = Query(default=None, gt=0),
-                page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=100),
+                page: int = Query(1, ge=1), limit: int = Query(5, ge=1, le=100),
                 db: Session = Depends(get_db)):
     rows = db.execute(text("""
       SELECT RoundId AS id,CategoryId AS category_id,RoundNumber AS round_number,
@@ -371,7 +378,7 @@ def list_rounds(event_id: int, category_id: int | None = Query(default=None, gt=
 
 @router.get("/events/{event_id}/matches")
 def list_matches(event_id: int, round_id: int | None = Query(default=None, gt=0),
-                 page: int = Query(1, ge=1), limit: int = Query(50, ge=1, le=100),
+                 page: int = Query(1, ge=1), limit: int = Query(5, ge=1, le=100),
                  db: Session = Depends(get_db)):
     rows = db.execute(text("""
       SELECT m.MatchId AS id,m.RoundId AS round_id,m.MatchNumber AS match_number,
@@ -697,7 +704,10 @@ def _write_event_status(db: Session, event_id: int, target: str, actor_id: int,
         if not can_transition(previous, next_status):
             raise HTTPException(409, f"Transición de evento no permitida: {previous} → {next_status}.")
         if previous != next_status:
-            db.execute(text("UPDATE dbo.Events SET CompetitionStatus=:status WHERE EventId=:event"),
+            db.execute(text("""UPDATE dbo.Events SET CompetitionStatus=:status,
+              IsActive=CASE WHEN :status IN ('FINISHED','CANCELLED') THEN 0
+                            WHEN :status IN ('SCHEDULED','LIVE','PAUSED') THEN 1 ELSE IsActive END
+              WHERE EventId=:event"""),
                        {"status": next_status, "event": event_id})
             db.execute(text("""
               INSERT dbo.CompetitionEventStatusHistory
@@ -705,6 +715,9 @@ def _write_event_status(db: Session, event_id: int, target: str, actor_id: int,
               VALUES(:event,:previous,:next,:actor,:reason)
             """), {"event": event_id, "previous": previous, "next": next_status,
                   "actor": actor_id, "reason": reason})
+            db.execute(text("""INSERT dbo.EventStatusHistory(EventId,PreviousStatus,NewStatus,Reason,ActorUserId)
+              VALUES(:event,:previous,:next,:reason,:actor)"""),
+              {"event":event_id,"previous":previous,"next":next_status,"reason":reason,"actor":actor_id})
         previous = next_status
 
 

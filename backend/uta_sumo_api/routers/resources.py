@@ -34,7 +34,7 @@ def _name_exists(db: Session, resource_type: str, name: str, *, exclude_id: int 
 
 
 @router.get("/teams")
-def list_teams(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+def list_teams(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
               user=Depends(get_current_user), db: Session = Depends(get_db)):
     where = "" if user["role"] in ("ADMIN", "EVENT_MANAGER") else "WHERE t.OwnerUserId=:owner"
     contact_phone = "t.ContactPhone" if user["role"] != "EVENT_MANAGER" else "CAST(NULL AS NVARCHAR(128))"
@@ -157,7 +157,7 @@ def update_team(team_id: int, payload: TeamUpdate, user=Depends(require_roles("P
 
 
 @router.get("/robots")
-def list_robots(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+def list_robots(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
                 user=Depends(get_current_user), db: Session = Depends(get_db)):
     where = "" if user["role"] in ("ADMIN", "EVENT_MANAGER") else "WHERE OwnerUserId=:owner"
     total = db.execute(text(f"SELECT COUNT_BIG(*) FROM dbo.Robots {where}"),
@@ -319,7 +319,7 @@ def update_own_participant(payload: ParticipantUpdate,
 
 
 @router.get("/participants")
-def list_participants(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+def list_participants(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
                       user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
                       db: Session = Depends(get_db)):
     mobile_phone = "MobilePhone" if user["role"] == "ADMIN" else "CAST(NULL AS NVARCHAR(128))"

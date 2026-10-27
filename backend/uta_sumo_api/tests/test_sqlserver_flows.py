@@ -7,6 +7,7 @@ from time import sleep
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ import main
 import routers.competition as competition_router
 import routers.payments as payments_router
 import routers.auth as auth_router
+import routers.admin as admin_router
 import app.services.registration_delivery as registration_delivery
 from app.core.security import create_access_token, hash_password
 from app.core.crypto import decrypt_text, email_lookup_hash, encrypt_text
@@ -62,6 +64,7 @@ def sql_api(monkeypatch, tmp_path):
     main.app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(payments_router, "RECEIPT_STORAGE_DIR", tmp_path)
     monkeypatch.setattr(auth_router, "EMAIL_CHECK_DELIVERABILITY", False)
+    monkeypatch.setattr(admin_router, "EMAIL_CHECK_DELIVERABILITY", False)
     # SQL integration tests must never use a developer's configured SMTP
     # account. Individual delivery tests can replace these with a fake server.
     monkeypatch.setattr(registration_delivery, "SMTP_HOST", "")
@@ -170,7 +173,19 @@ def test_registration_login_owner_isolation_and_duplicate_policy(sql_api):
         "first_name": "Updated", "last_name": "Participant", "mobile_phone": "0993334444"})
     assert profile.status_code == 200
     assert client.get("/api/v1/auth/me", headers=token).json()["first_name"] == "Updated"
-    registration = _create_registration(ctx, token)
+    administrator = _account(ctx, "ADMIN")
+    admin_ws_token = administrator["headers"]["Authorization"].removeprefix("Bearer ")
+    with client.websocket_connect("/api/v1/payments/ws/admin",
+                                 subprotocols=["uta-payment-updates", admin_ws_token]) as socket:
+        assert socket.receive_json() == {"type": "connected"}
+        registration = _create_registration(ctx, token)
+        live_registration = socket.receive_json()
+        assert live_registration["type"] == "registration.created"
+        assert live_registration["registration_id"] == registration["id"]
+        assert live_registration["event_id"] == ctx["event_id"]
+        assert live_registration["status"] == "PAYMENT_PENDING"
+        assert live_registration["payment_status"] == "PENDING"
+        assert live_registration["has_receipt"] is False
     assert registration["status"] == "PAYMENT_PENDING"
     assert Decimal(registration["amount"]) == Decimal("12.50")
     registration_page = client.get("/api/v1/registrations?page=1&limit=1", headers=token)
@@ -189,6 +204,39 @@ def test_registration_login_owner_isolation_and_duplicate_policy(sql_api):
     other_token = {"Authorization": f"Bearer {second['access_token']}"}
     assert client.get(f"/api/v1/registrations/{registration['id']}", headers=other_token).status_code == 404
     assert client.get("/api/v1/auth/me", headers={"Authorization": "Bearer invalid"}).status_code == 401
+
+
+def test_admin_must_change_password_before_using_admin_endpoints(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    admin_email = f"must_change_{uuid.uuid4().hex[:8]}@uta.edu.ec"
+    admin = _account(ctx, "ADMIN", admin_email)
+    ctx["db"].execute(text("UPDATE dbo.Users SET MustChangePassword=1 WHERE UserId=:id"),
+                      {"id": admin["user_id"]})
+    ctx["db"].commit()
+    login = client.post("/api/v1/auth/login", json={
+        "email": admin_email, "password": "Robotics-test-password-2026"})
+    assert login.status_code == 200
+    assert login.json()["user"]["must_change_password"] is True
+    old_token = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/api/v1/admin/roles", headers=old_token).status_code == 403
+    with pytest.raises(WebSocketDisconnect) as forced_socket:
+        with client.websocket_connect("/api/v1/payments/ws/admin",
+                                      subprotocols=["uta-payment-updates", login.json()["access_token"]]):
+            pass
+    assert forced_socket.value.code == 4403
+    changed = client.post("/api/v1/auth/change-password", headers=old_token, json={
+        "current_password": "Robotics-test-password-2026",
+        "new_password": "Admin-updated-password-2026!",
+    })
+    assert changed.status_code == 204
+    assert client.get("/api/v1/auth/me", headers=old_token).status_code == 401
+    relogin = client.post("/api/v1/auth/login", json={
+        "email": admin_email, "password": "Admin-updated-password-2026!"})
+    assert relogin.status_code == 200
+    assert relogin.json()["user"]["must_change_password"] is False
+    new_token = {"Authorization": f"Bearer {relogin.json()['access_token']}"}
+    assert client.get("/api/v1/admin/roles", headers=new_token).status_code == 200
 
 
 def test_three_member_roster_orders_and_mine_queries_persist_without_adding_owner(sql_api):
@@ -284,6 +332,44 @@ def test_event_category_roster_rules_are_configurable_and_enforced(sql_api):
             "mobile_phone": None}],
     })
     assert one_member.status_code == 422
+
+
+def test_admin_creates_custom_category_and_attaches_it_atomically(sql_api):
+    ctx = sql_api
+    admin = _account(ctx, "ADMIN")
+    participant = _register(ctx, f"categoryuser_{uuid.uuid4().hex[:8]}")
+    payload = {
+        "name": f"Sumo personalizado {uuid.uuid4().hex[:6]}",
+        "description": "  Categoría creada desde administración  ",
+        "is_active": True, "min_participants": 1, "max_participants": 2,
+        "min_coaches": 0, "max_coaches": 1,
+    }
+    forbidden = ctx["client"].post(
+        f"/api/v1/admin/events/{ctx['event_id']}/categories",
+        headers={"Authorization": f"Bearer {participant['access_token']}"}, json=payload,
+    )
+    assert forbidden.status_code == 403
+    created = ctx["client"].post(
+        f"/api/v1/admin/events/{ctx['event_id']}/categories",
+        headers=admin["headers"], json=payload,
+    )
+    assert created.status_code == 201, created.text
+    result = created.json()
+    assert result["name"] == payload["name"]
+    assert result["description"] == "Categoría creada desde administración"
+    assert result["event_id"] == ctx["event_id"]
+    assert result["is_active"] is True
+    stored = ctx["db"].execute(text("""
+        SELECT COUNT_BIG(*) FROM dbo.Categories c
+        JOIN dbo.EventCategories ec ON ec.CategoryId=c.CategoryId
+        WHERE c.CategoryId=:category AND ec.EventId=:event
+    """), {"category": result["id"], "event": ctx["event_id"]}).scalar_one()
+    assert stored == 1
+    duplicate = ctx["client"].post(
+        f"/api/v1/admin/events/{ctx['event_id']}/categories",
+        headers=admin["headers"], json=payload,
+    )
+    assert duplicate.status_code == 409
 
 
 
@@ -396,9 +482,32 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api, monkeypat
     assert client.post(f"/api/v1/registrations/{registration['id']}/review",
                        headers=event_manager["headers"],
                        json={"status": "APPROVED"}).status_code == 403
-    submitted = client.post(f"/api/v1/payments/{payment_id}/receipt", headers=token,
-                            data={"payment_reference": "bank-transfer-test"},
-                            files={"file": ("proof.pdf", b"%PDF-1.7\nmock evidence", "application/pdf")})
+    with pytest.raises(WebSocketDisconnect) as forbidden_socket:
+        with client.websocket_connect("/api/v1/payments/ws/admin",
+                                      subprotocols=["uta-payment-updates", participant["access_token"]]):
+            pass
+    assert forbidden_socket.value.code == 4403
+    ws_admin = ctx["db"].execute(text("""
+        SELECT TOP (1) u.UserId,u.TokenVersion FROM dbo.Users u
+        JOIN dbo.Roles r ON r.RoleId=u.RoleId WHERE r.Code='ADMIN' AND u.IsActive=1
+        ORDER BY u.UserId
+    """)).one()
+    admin_ws_token = create_access_token(ws_admin[0], "ADMIN", ws_admin[1])
+    with client.websocket_connect("/api/v1/payments/ws/admin",
+                                  subprotocols=["uta-payment-updates", admin_ws_token]) as socket:
+        assert socket.accepted_subprotocol == "uta-payment-updates"
+        assert socket.receive_json() == {"type": "connected"}
+        submitted = client.post(f"/api/v1/payments/{payment_id}/receipt", headers=token,
+                                data={"payment_reference": "bank-transfer-test"},
+                                files={"file": ("proof.pdf", b"%PDF-1.7\nmock evidence", "application/pdf")})
+        assert submitted.status_code == 202, submitted.text
+        live_update = socket.receive_json()
+        assert live_update["type"] == "payment.receipt_submitted"
+        assert live_update["payment_id"] == payment_id
+        assert live_update["registration_id"] == registration["id"]
+        assert live_update["status"] == "IN_REVIEW"
+        assert live_update["has_receipt"] is True
+        assert "receipt_key" not in live_update
     assert submitted.status_code == 202, submitted.text
     assert submitted.json()["notification_status"] == "PENDING"
     proof_email = ctx["db"].execute(text("""
@@ -428,8 +537,15 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api, monkeypat
     missing_reason = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
                                  json={"status": "REJECTED"})
     assert missing_reason.status_code == 422
-    rejected = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
-                           json={"status": "REJECTED", "comments": "evidencia ilegible"})
+    with client.websocket_connect("/api/v1/payments/ws/admin",
+                                 subprotocols=["uta-payment-updates", admin_ws_token]) as socket:
+        assert socket.receive_json() == {"type": "connected"}
+        rejected = client.post(f"/api/v1/payments/{payment_id}/review", headers=administrator["headers"],
+                               json={"status": "REJECTED", "comments": "evidencia ilegible"})
+        live_review = socket.receive_json()
+        assert live_review["type"] == "payment.reviewed"
+        assert live_review["payment_id"] == payment_id
+        assert live_review["status"] == "REJECTED"
     assert rejected.status_code == 200 and rejected.json()["status"] == "REJECTED"
     assert rejected.json()["notification_status"] == "PENDING"
     rejected_order = client.get("/api/v1/payments/my", headers=token).json()[0]
@@ -883,3 +999,73 @@ def test_registration_rolls_back_every_row_when_payment_insert_fails(sql_api, mo
     }
     assert after_outbox_failure == before
     assert set(ctx["receipt_dir"].glob("payment-instruction-*.pdf")) == storage_before
+
+
+def test_admin_event_forms_accounts_and_encrypted_registration_answers(sql_api):
+    ctx=sql_api;client=ctx["client"]
+    admin=_account(ctx,"ADMIN")
+    manager=_account(ctx,"EVENT_MANAGER")
+    assert client.get("/api/v1/admin/events",headers=manager["headers"]).status_code==403
+    create_user=client.post("/api/v1/admin/users",headers=admin["headers"],json={
+        "email":f"new_admin_{uuid.uuid4().hex[:8]}@gmail.com","first_name":"New",
+        "last_name":"Admin","role":"ADMIN","password":"Strong-secret-phrase-2026!"})
+    assert create_user.status_code==201,create_user.text
+    assert "password" not in create_user.json()
+    duplicate=client.post("/api/v1/admin/users",headers=admin["headers"],json={
+        "email":create_user.json()["email"],"first_name":"New","last_name":"Admin",
+        "role":"ADMIN","password":"Strong-secret-phrase-2026!"})
+    assert duplicate.status_code==409
+
+    created=client.post("/api/v1/admin/events",headers=admin["headers"],json={
+        "name":f"Managed-{uuid.uuid4().hex[:8]}","edition_year":date.today().year,
+        "description":"Competencia de integración","venue":"Ambato",
+        "registration_start":"2020-01-01","registration_end":"2099-12-31",
+        "starts_at":"2027-03-01T08:00:00","ends_at":"2027-03-01T18:00:00","is_active":True})
+    assert created.status_code==201,created.text
+    event_id=created.json()["id"]
+    scheduled=client.patch(f"/api/v1/admin/events/{event_id}/status",headers=admin["headers"],json={"status":"SCHEDULED"})
+    assert scheduled.status_code==200 and scheduled.json()["status"]=="SCHEDULED"
+    invalid=client.patch(f"/api/v1/admin/events/{event_id}/status",headers=admin["headers"],json={"status":"DRAFT"})
+    assert invalid.status_code==409
+    update=client.put(f"/api/v1/admin/events/{event_id}",headers=admin["headers"],json={
+        "name":created.json()["name"],"edition_year":date.today().year,"description":"Descripción actualizada",
+        "venue":"Ambato","registration_start":"2020-01-01","registration_end":"2099-12-31",
+        "starts_at":"2027-03-01T08:00:00","ends_at":"2027-03-01T18:00:00","is_active":True})
+    assert update.status_code==200
+    assert client.get(f"/api/v1/admin/events/{event_id}/audit",headers=admin["headers"]).json()["total"]==2
+    rules=client.put(f"/api/v1/admin/events/{event_id}/categories/{ctx['category_id']}",headers=admin["headers"],json={
+        "is_active":True,"min_participants":1,"max_participants":2,"min_coaches":0,"max_coaches":1,"max_registrations":None})
+    assert rules.status_code==200,rules.text
+    tariff=client.post("/api/v1/tariffs",headers=admin["headers"],json={
+        "event_id":event_id,"category_id":ctx["category_id"],"amount":"15.00",
+        "valid_from":date.today().isoformat(),"valid_until":None,"is_active":True})
+    assert tariff.status_code==201,tariff.text
+    assert client.get(f"/api/v1/admin/events/{event_id}/tariffs",headers=admin["headers"]).json()["items"][0]["amount"]==15.0
+
+    form_body={"title":"Formulario","description":"Datos extra","fields":[
+        {"id":"school","label":"Institución","type":"short_text","required":True,"options":[]}]}
+    form=client.put(f"/api/v1/admin/events/{ctx['event_id']}/form",headers=admin["headers"],json=form_body)
+    assert form.status_code==200,form.text
+    assert client.get(f"/api/v1/events/{ctx['event_id']}/form").json()["version"]==1
+
+    participant=_register(ctx,f"custom_{uuid.uuid4().hex[:8]}")
+    token={"Authorization":f"Bearer {participant['access_token']}"}
+    profile,team,robot=_owned_resources(ctx,token)
+    body={"event_id":ctx["event_id"],"category_id":ctx["category_id"],"team_id":team["id"],
+          "robot_id":robot["id"],"participants":[{"participant_id":profile["id"],"role":"PARTICIPANT"}]}
+    missing=client.post("/api/v1/registrations",headers=token,json=body)
+    assert missing.status_code==422
+    body["custom_answers"]={"school":"Universidad de prueba"}
+    registration=client.post("/api/v1/registrations",headers=token,json=body)
+    assert registration.status_code==201,registration.text
+    detail=client.get(f"/api/v1/registrations/{registration.json()['id']}",headers=token)
+    assert detail.status_code==200
+    assert detail.json()["custom_answers"]==body["custom_answers"]
+    assert detail.json()["custom_form_version"]==1
+    stored=ctx["db"].execute(text("SELECT AnswersCiphertext FROM dbo.RegistrationFormResponses WHERE RegistrationId=:id"),
+                              {"id":registration.json()["id"]}).scalar_one()
+    assert stored.startswith("enc:v1:") and body["custom_answers"]["school"] not in stored
+    form_body["title"]="Formulario v2"
+    form2=client.put(f"/api/v1/admin/events/{ctx['event_id']}/form",headers=admin["headers"],json=form_body)
+    assert form2.status_code==200 and form2.json()["version"]==2
+    assert client.get(f"/api/v1/registrations/{registration.json()['id']}",headers=token).json()["custom_form_version"]==1

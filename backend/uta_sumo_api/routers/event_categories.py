@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.dependencies.auth import require_roles
-from app.schemas.resources import EventCategoryRulesInput
+from app.core.pagination import apply_pagination_headers
+from app.schemas.resources import EventCategoryCreateInput, EventCategoryRulesInput
 from database import get_db
 
 router = APIRouter(tags=["Categorías por evento"])
@@ -19,16 +20,79 @@ _SELECT = """
 """
 
 
+@router.post("/api/v1/admin/events/{event_id}/categories", status_code=201)
+def create_event_category(event_id: int, payload: EventCategoryCreateInput,
+                          _user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
+    if db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"), {"id": event_id}).first() is None:
+        raise HTTPException(status_code=404, detail="Evento no encontrado.")
+    try:
+        category = db.execute(text("""
+            INSERT dbo.Categories(Name,Description)
+            OUTPUT INSERTED.CategoryId AS id,INSERTED.Name AS name,
+                   INSERTED.Description AS description
+            VALUES(:name,:description)
+        """), {"name": payload.name, "description": payload.description}).mappings().one()
+        db.execute(text("""
+            INSERT dbo.EventCategories(EventId,CategoryId,IsActive,MinParticipants,MaxParticipants,
+              MinCoaches,MaxCoaches,MaxRegistrations)
+            VALUES(:event,:category,:active,:min_participants,:max_participants,
+              :min_coaches,:max_coaches,:max_registrations)
+        """), {"event": event_id, "category": category["id"], "active": payload.is_active,
+              "min_participants": payload.min_participants, "max_participants": payload.max_participants,
+              "min_coaches": payload.min_coaches, "max_coaches": payload.max_coaches,
+              "max_registrations": payload.max_registrations})
+        db.commit()
+        return {**dict(category), "event_id": event_id, "is_active": payload.is_active,
+                "min_participants": payload.min_participants, "max_participants": payload.max_participants,
+                "min_coaches": payload.min_coaches, "max_coaches": payload.max_coaches,
+                "max_registrations": payload.max_registrations}
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Ya existe una categoría con ese nombre.")
+
+
 @router.get("/api/v1/events/{event_id}/categories")
-def list_event_categories(event_id: int, db: Session = Depends(get_db)):
+def list_event_categories(event_id: int, response: Response,
+                          category_id: int | None = Query(None, ge=1),
+                          page: int = Query(1, ge=1, le=1_000_000),
+                          limit: int = Query(5, ge=1, le=100), db: Session = Depends(get_db)):
     if db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id AND IsActive=1"),
                   {"id": event_id}).first() is None:
         raise HTTPException(status_code=404, detail="Evento no encontrado.")
+    category_filter = " AND ec.CategoryId=:category" if category_id is not None else ""
+    params = {"event": event_id, "category": category_id,
+              "offset": (page - 1) * limit, "limit": limit}
+    total = int(db.execute(text("""SELECT COUNT_BIG(*) FROM dbo.EventCategories ec
+        JOIN dbo.Categories c ON c.CategoryId=ec.CategoryId
+        WHERE ec.EventId=:event AND ec.IsActive=1 AND c.IsActive=1""" + category_filter),
+        {"event": event_id, "category": category_id}).scalar_one())
     rows = db.execute(text(_SELECT + """
         WHERE ec.EventId=:event AND ec.IsActive=1 AND c.IsActive=1
-        ORDER BY c.Name,c.CategoryId
-    """), {"event": event_id}).mappings().all()
+          AND (:category IS NULL OR ec.CategoryId=:category)
+        ORDER BY c.Name,c.CategoryId OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
+    """), params).mappings().all()
+    apply_pagination_headers(response, total=total, page=page, limit=limit)
     return [dict(row) for row in rows]
+
+
+@router.get("/api/v1/admin/events/{event_id}/categories")
+def list_admin_event_categories(event_id: int, response: Response,
+                                page: int = Query(1, ge=1, le=1_000_000),
+                                limit: int = Query(5, ge=1, le=100),
+                                _user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
+    if db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"), {"id": event_id}).first() is None:
+        raise HTTPException(status_code=404, detail="Evento no encontrado.")
+    predicate = "WHERE ec.EventId=:event"
+    params = {"event": event_id, "offset": (page - 1) * limit, "limit": limit}
+    total = int(db.execute(text("SELECT COUNT_BIG(*) FROM dbo.EventCategories ec " + predicate),
+                           {"event": event_id}).scalar_one())
+    rows = db.execute(text(_SELECT + """
+        WHERE ec.EventId=:event ORDER BY c.Name,c.CategoryId
+        OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
+    """), params).mappings().all()
+    apply_pagination_headers(response, total=total, page=page, limit=limit)
+    return {"items": [dict(row) for row in rows], "page": page, "page_size": limit,
+            "total": total, "total_pages": (total + limit - 1) // limit}
 
 
 @router.put("/api/v1/admin/events/{event_id}/categories/{category_id}")

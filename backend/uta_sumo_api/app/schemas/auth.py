@@ -53,6 +53,7 @@ class UserResponse(BaseModel):
     first_name: str
     last_name: str
     role: str
+    must_change_password: bool = False
 
 
 class AuthResponse(BaseModel):

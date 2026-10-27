@@ -157,7 +157,7 @@ def registration_details(
     from_date: date | None = Query(None),
     to_date: date | None = Query(None),
     page: int = Query(1, ge=1, le=1_000_000),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(5, ge=1, le=100),
     user=Depends(require_roles("ADMIN", "EVENT_MANAGER")),
     db: Session = Depends(get_db),
 ):
@@ -205,7 +205,7 @@ def payment_details(
     event_id: int | None = Query(None, ge=1),
     status: str | None = Query(None, min_length=1, max_length=20),
     page: int = Query(1, ge=1, le=1_000_000),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(5, ge=1, le=100),
     user=Depends(require_roles("ADMIN")),
     db: Session = Depends(get_db),
 ):

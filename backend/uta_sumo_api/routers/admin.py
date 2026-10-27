@@ -1,14 +1,54 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from email_validator import EmailNotValidError, validate_email
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.dependencies.auth import require_roles
 from app.core.crypto import decrypt_text
 from app.core.pagination import apply_pagination_headers
 from app.schemas.resources import UserAdminUpdate
+from app.schemas.resources import AdminUserCreate
+from app.core.config import EMAIL_CHECK_DELIVERABILITY
+from app.core.password_policy import validate_password
+from app.core.security import hash_password
+from app.core.crypto import email_lookup_hash, encrypt_text
 from database import get_db
 
 router = APIRouter(prefix="/api/v1/admin", tags=["Administración"])
+
+
+@router.post("/users", status_code=201)
+def create_privileged_user(payload: AdminUserCreate, actor=Depends(require_roles("ADMIN")),
+                           db: Session = Depends(get_db)):
+    try:
+        email = validate_email(payload.email, check_deliverability=EMAIL_CHECK_DELIVERABILITY,
+                               timeout=5, globally_deliverable=True).normalized.casefold()
+        validate_password(payload.password, email)
+    except (EmailNotValidError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not payload.first_name.strip() or not payload.last_name.strip():
+        raise HTTPException(status_code=422, detail="Nombre y apellido son obligatorios.")
+    role_id = db.execute(text("SELECT RoleId FROM dbo.Roles WHERE Code=:role"),
+                         {"role": payload.role}).scalar_one_or_none()
+    if role_id is None:
+        raise HTTPException(status_code=422, detail="El rol indicado no existe.")
+    try:
+        user_id = db.execute(text("""
+          INSERT dbo.Users(EmailCiphertext,EmailLookupHash,PasswordHash,FirstName,LastName,RoleId,IsActive)
+          OUTPUT INSERTED.UserId
+          VALUES(:email,:lookup,:password,:first,:last,:role,1)
+        """), {"email":encrypt_text(email),"lookup":email_lookup_hash(email),
+          "password":hash_password(payload.password),"first":encrypt_text(payload.first_name.strip()),
+          "last":encrypt_text(payload.last_name.strip()),"role":role_id}).scalar_one()
+        db.execute(text("""INSERT dbo.UserSecurityAudit(TargetUserId,ActorUserId,ActionCode,NewRoleId,NewIsActive)
+          VALUES(:target,:actor,'ACCOUNT_CREATED',:role,1)"""),
+          {"target":user_id,"actor":actor["user_id"],"role":role_id})
+        db.commit()
+        return {"id":user_id,"email":email,"role":payload.role,"is_active":True}
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Ya existe una cuenta con ese correo.")
 
 
 @router.get("/roles", dependencies=[Depends(require_roles("ADMIN"))])
@@ -17,7 +57,7 @@ def roles(db: Session = Depends(get_db)):
 
 
 @router.get("/users", dependencies=[Depends(require_roles("ADMIN"))])
-def users(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+def users(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
           db: Session = Depends(get_db)):
     total = db.execute(text("SELECT COUNT_BIG(*) FROM dbo.Users")).scalar_one()
     rows = db.execute(text("""
@@ -95,7 +135,7 @@ def dashboard(db: Session = Depends(get_db)):
 
 @router.get("/audit/users", dependencies=[Depends(require_roles("ADMIN"))])
 def user_security_audit(response: Response, target_user_id: int | None = Query(None, ge=1),
-                        page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+                        page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
                         db: Session = Depends(get_db)):
     total = db.execute(text("""
         SELECT COUNT_BIG(*) FROM dbo.UserSecurityAudit

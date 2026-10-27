@@ -1,3 +1,5 @@
+import json
+import math
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from uuid import UUID
 from sqlalchemy import bindparam, text
@@ -13,9 +15,37 @@ from app.schemas.registration import RegistrationCreate, RegistrationReview, Reg
 from app.services.registration_service import change_registration_status
 from app.services.registration_delivery import (build_payment_instruction_pdf, deliver_outbox,
                                                 receipt_path, store_pdf)
+from app.services.payment_live import payment_update_connections
 from database import get_db
 
 router = APIRouter(prefix="/api/v1/registrations", tags=["Inscripciones"])
+
+
+def _validate_custom_number(value, label: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise HTTPException(status_code=422, detail=f"El campo '{label}' debe ser numérico.")
+    if value < 0:
+        raise HTTPException(status_code=422, detail=f"El campo '{label}' no puede ser negativo.")
+
+
+def _registration_update_payload(db: Session, registration_id: int, event_type: str) -> dict:
+    row = db.execute(text("""
+        SELECT r.RegistrationId AS registration_id,r.EventId AS event_id,
+          r.CategoryId AS category_id,s.Code AS status,p.PaymentId AS payment_id,
+          p.PaymentStatus AS payment_status,
+          CASE WHEN pr.ReceiptId IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS has_receipt,
+          pr.UploadedAt AS receipt_uploaded_at
+        FROM dbo.Registrations r
+        JOIN dbo.RegistrationStatuses s ON s.StatusId=r.StatusId
+        LEFT JOIN dbo.Payments p ON p.RegistrationId=r.RegistrationId
+        LEFT JOIN dbo.PaymentReceipts pr ON pr.PaymentId=p.PaymentId AND pr.IsCurrent=1
+        WHERE r.RegistrationId=:id
+    """), {"id": registration_id}).mappings().one()
+    payload = dict(row)
+    uploaded_at = payload.get("receipt_uploaded_at")
+    if uploaded_at is not None:
+        payload["receipt_uploaded_at"] = uploaded_at.isoformat()
+    return {"type": event_type, **payload}
 
 
 def _detail(db: Session, registration_id: int, *, viewer_role: str | None = None):
@@ -73,6 +103,13 @@ def _detail(db: Session, registration_id: int, *, viewer_role: str | None = None
             participant["slot"] = None
         if viewer_role == "EVENT_MANAGER":
             participant["mobile_phone"] = None
+    form_response = db.execute(text("""SELECT fr.AnswersCiphertext,fv.VersionNumber AS form_version,
+      fv.Title AS form_title FROM dbo.RegistrationFormResponses fr
+      JOIN dbo.EventFormVersions fv ON fv.FormVersionId=fr.FormVersionId
+      WHERE fr.RegistrationId=:id"""), {"id": registration_id}).mappings().first()
+    result["custom_form_version"] = int(form_response["form_version"]) if form_response else None
+    result["custom_form_title"] = form_response["form_title"] if form_response else None
+    result["custom_answers"] = json.loads(decrypt_text(form_response["AnswersCiphertext"])) if form_response else {}
     if viewer_role == "EVENT_MANAGER":
         result["payment_reference"] = None
     result["can_upload_receipt"] = (
@@ -162,6 +199,50 @@ def create_registration(payload: RegistrationCreate,
         if registrations_count >= valid["MaxRegistrations"]:
             raise HTTPException(status_code=409, detail="La categoría alcanzó su cupo de inscripciones.")
 
+    form = db.execute(text("""SELECT TOP (1) FormVersionId,FieldsJson FROM dbo.EventFormVersions
+      WHERE EventId=:event AND IsCurrent=1"""), {"event": payload.event_id}).mappings().first()
+    if form:
+        import json
+        fields = json.loads(form["FieldsJson"])
+        definitions = {item["id"]: item for item in fields}
+        unknown = set(payload.custom_answers) - set(definitions)
+        if unknown:
+            raise HTTPException(status_code=422, detail="La respuesta incluye campos que no pertenecen a la versión vigente del formulario.")
+        for key, definition in definitions.items():
+            value = payload.custom_answers.get(key)
+            if definition.get("required") and (value is None or value == "" or value == []):
+                raise HTTPException(status_code=422, detail=f"El campo '{definition['label']}' es obligatorio.")
+            if value is None or value == "":
+                continue
+            kind = definition["type"]
+            allowed = definition.get("options", [])
+            if kind in {"single_choice", "dropdown"} and value not in allowed:
+                raise HTTPException(status_code=422, detail=f"La respuesta de '{definition['label']}' no es válida.")
+            if kind == "checkboxes" and (not isinstance(value, list) or any(v not in allowed for v in value)):
+                raise HTTPException(status_code=422, detail=f"Las opciones de '{definition['label']}' no son válidas.")
+            if kind in {"short_text", "long_text", "email", "date"} and (not isinstance(value, str) or len(value) > 4000):
+                raise HTTPException(status_code=422, detail=f"El valor de '{definition['label']}' no es válido.")
+            if kind == "short_text" and len(value) > 500:
+                raise HTTPException(status_code=422, detail=f"El campo '{definition['label']}' supera 500 caracteres.")
+            if kind == "email":
+                from email_validator import EmailNotValidError, validate_email
+                try:
+                    validate_email(value, check_deliverability=False)
+                except EmailNotValidError as exc:
+                    raise HTTPException(status_code=422, detail=f"El correo del campo '{definition['label']}' no es válido.") from exc
+            if kind == "date":
+                from datetime import date
+                try:
+                    date.fromisoformat(value)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=f"La fecha de '{definition['label']}' no es válida.") from exc
+            if kind == "number":
+                _validate_custom_number(value, definition["label"])
+            if kind == "checkboxes" and len(value) != len(set(value)):
+                raise HTTPException(status_code=422, detail=f"No repitas opciones en '{definition['label']}'.")
+    elif payload.custom_answers:
+        raise HTTPException(status_code=422, detail="El evento no tiene campos personalizados vigentes.")
+
     initial_status = db.execute(text("SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='PAYMENT_PENDING'")).scalar_one_or_none()
     if initial_status is None:
         raise HTTPException(status_code=503, detail="Falta el estado PAYMENT_PENDING en la base de datos.")
@@ -177,6 +258,11 @@ def create_registration(payload: RegistrationCreate,
               "status": initial_status, "notes": encrypt_text(payload.notes),
               "owner": user["user_id"]}).mappings().one()
         registration_id = row["id"]
+        if form:
+            db.execute(text("""INSERT dbo.RegistrationFormResponses(RegistrationId,FormVersionId,AnswersCiphertext)
+              VALUES(:registration,:form,:answers)"""),
+              {"registration":registration_id,"form":form["FormVersionId"],
+               "answers":encrypt_text(json.dumps(payload.custom_answers,ensure_ascii=False))})
         for position, item in enumerate(payload.participants, start=1):
             if item.participant_id is None:
                 institution_active = db.execute(text("""
@@ -252,8 +338,10 @@ def create_registration(payload: RegistrationCreate,
               "recipient": encrypt_text(email),
               "subject": encrypt_text(f"Inscripción {valid['EventName']} — instrucciones de pago"),
               "body": encrypt_text(body)}).scalar_one()
+        live_update = _registration_update_payload(db, registration_id, "registration.created")
         db.commit()
         committed = True
+        payment_update_connections.broadcast_from_sync_route(live_update)
         try:
             email_delivery_status = deliver_outbox(db, outbox_id)
         except SQLAlchemyError:
@@ -288,7 +376,7 @@ def create_registration(payload: RegistrationCreate,
 
 
 @router.get("")
-def list_registrations(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+def list_registrations(response: Response, page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
                        status: str | None = None, event_id: int | None = None,
                        user=Depends(get_current_user), db: Session = Depends(get_db)):
     clauses, params = [], {"offset": (page-1)*limit, "limit": limit}
@@ -330,7 +418,7 @@ def list_registrations(response: Response, page: int = Query(1, ge=1, le=1_000_0
 @router.get("/my")
 def my_registrations(response: Response,
                      page: int = Query(1, ge=1, le=1_000_000),
-                     limit: int = Query(50, ge=1, le=100),
+                     limit: int = Query(5, ge=1, le=100),
                      status: str | None = None, event_id: int | None = None,
                      user=Depends(require_roles("PARTICIPANT")),
                      db: Session = Depends(get_db)):
@@ -456,7 +544,7 @@ def get_registration_by_code(registration_code: UUID, user=Depends(get_current_u
 
 @router.get("/{registration_id}/history")
 def registration_history(registration_id: int, response: Response,
-                         page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(50, ge=1, le=100),
+                         page: int = Query(1, ge=1, le=1_000_000), limit: int = Query(5, ge=1, le=100),
                          user=Depends(get_current_user), db: Session = Depends(get_db)):
     _authorized_registration(db, registration_id, user)
     total = db.execute(text("SELECT COUNT_BIG(*) FROM dbo.StatusHistory WHERE RegistrationId=:id"),
@@ -493,7 +581,9 @@ def update_registration(registration_id: int, payload: RegistrationUpdate,
         raise HTTPException(status_code=409, detail="La inscripción ya no admite cambios del usuario.")
     db.execute(text("UPDATE dbo.Registrations SET Notes=:notes WHERE RegistrationId=:id"),
                {"id": registration_id, "notes": encrypt_text(payload.notes)})
+    live_update = _registration_update_payload(db, registration_id, "registration.updated")
     db.commit()
+    payment_update_connections.broadcast_from_sync_route(live_update)
     result = _detail(db, registration_id, viewer_role="PARTICIPANT")
     result.pop("created_by_user_id", None)
     return result
@@ -506,7 +596,9 @@ def cancel_registration(registration_id: int, user=Depends(require_roles("PARTIC
     if record["status"] not in ("PAYMENT_PENDING", "OBSERVED"):
         raise HTTPException(status_code=409, detail="La inscripción ya no se puede cancelar.")
     change_registration_status(db, registration_id, "CANCELLED", user["user_id"], "Cancelada por participante")
+    live_update = _registration_update_payload(db, registration_id, "registration.updated")
     db.commit()
+    payment_update_connections.broadcast_from_sync_route(live_update)
     result = _detail(db, registration_id, viewer_role="PARTICIPANT")
     result.pop("created_by_user_id", None)
     return result
@@ -525,7 +617,9 @@ def review_registration(registration_id: int, payload: RegistrationReview,
     if payload.status not in allowed.get(record["status"], set()):
         raise HTTPException(status_code=409, detail=f"Transición inválida desde {record['status']}.")
     change_registration_status(db, registration_id, payload.status, user["user_id"], payload.comments)
+    live_update = _registration_update_payload(db, registration_id, "registration.updated")
     db.commit()
+    payment_update_connections.broadcast_from_sync_route(live_update)
     result = _detail(db, registration_id, viewer_role="ADMIN")
     result.pop("created_by_user_id", None)
     return result
