@@ -3,6 +3,53 @@
   white-space: pre-line;
 }
 
+.registration-progress {
+  margin: 0 0 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--registration-line);
+  border-radius: 12px;
+  background: #f8faff;
+}
+
+.registration-progress-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--registration-muted); font-size: 13px; }
+.registration-progress-heading strong { color: var(--registration-ink); }
+.registration-progress ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.registration-progress li { display: flex; min-width: 0; align-items: center; gap: 8px; color: #687588; font-size: 13px; font-weight: 650; }
+.registration-progress li > span { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border: 1px solid #cbd3df; border-radius: 50%; background: #fff; color: #556170; font-size: 12px; }
+.registration-progress li.is-current { color: var(--registration-accent); }
+.registration-progress li.is-current > span, .registration-progress li.is-complete > span { border-color: var(--registration-accent); background: var(--registration-accent); color: #fff; }
+.registration-step-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.registration-step-actions .primary-button, .registration-step-actions .secondary-button { margin: 0; }
+.registration-review { margin-top: 8px; padding: 18px; border: 1px solid var(--registration-line); border-radius: 12px; background: #fbfcfe; }
+.registration-review h2 { margin: 0 0 6px; color: var(--registration-ink); font-size: 21px; }
+.registration-review > p { margin: 0 0 12px; color: var(--registration-muted); font-size: 14px; line-height: 1.5; }
+.registration-review dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; margin: 0; }
+.registration-review dl > div { display: grid; gap: 4px; padding: 12px 0; border-top: 1px solid var(--registration-line); }
+.registration-review dt { color: var(--registration-muted); font-size: 12px; }
+.registration-review dd { margin: 0; color: var(--registration-ink); font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+
+.registration-toast {
+  position: fixed;
+  z-index: 1000;
+  right: 24px;
+  bottom: 24px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 14px 18px;
+  border: 1px solid #fecaca;
+  border-left: 4px solid #dc2626;
+  border-radius: 10px;
+  background: #fff;
+  color: #991b1b;
+  box-shadow: 0 12px 32px rgb(15 23 42 / 20%);
+  font-weight: 700;
+  animation: registration-toast-in 180ms ease-out;
+}
+
+@keyframes registration-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .form-grid-two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -43,4 +90,9 @@
   .form-grid-two {
     grid-template-columns: 1fr;
   }
+
+  .registration-progress ol { grid-template-columns: 1fr; gap: 8px; }
+  .registration-review dl { grid-template-columns: 1fr; }
+  .registration-step-actions { flex-direction: column-reverse; }
+  .registration-step-actions > button { width: 100%; }
 }

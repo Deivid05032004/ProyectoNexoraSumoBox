@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  cargarCategoriasEvento,
   cargarConfiguracionEvento,
   cargarDatosInscripcion,
   crearInscripcion,
@@ -9,11 +10,6 @@ import Confirmacion from './Confirmacion'
 import MisOrdenes from './MisOrdenes'
 import './Inscripcion.css'
 
-const NUEVOS_INTEGRANTES = [
-  { role: 'PARTICIPANT', first_name: '', last_name: '', institution_id: '', mobile_phone: '' },
-  { role: 'PARTICIPANT', first_name: '', last_name: '', institution_id: '', mobile_phone: '' },
-  { role: 'COACH', first_name: '', last_name: '', institution_id: '', mobile_phone: '' },
-]
 const PATRON_NOMBRE = /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]*$/
 const PATRON_CELULAR = /^\d{10}$/
 
@@ -25,8 +21,23 @@ function institucionValida(institucion) {
   return institucion.name.length <= 30 && PATRON_NOMBRE.test(institucion.name)
 }
 
-function integrantesIniciales() {
-  return NUEVOS_INTEGRANTES.map((integrante) => ({ ...integrante }))
+function integranteVacio(role) {
+  return { role, first_name: '', last_name: '', institution_id: '', mobile_phone: '' }
+}
+
+function rosterInicial(reglas) {
+  const minParticipantes = Math.max(1, Number(reglas?.min_participants ?? 1))
+  const minCoaches = Math.max(0, Number(reglas?.min_coaches ?? 0))
+  return [
+    ...Array.from({ length: minParticipantes }, () => integranteVacio('PARTICIPANT')),
+    ...Array.from({ length: minCoaches }, () => integranteVacio('COACH')),
+  ]
+}
+
+function rangoRoster(minimo, maximo) {
+  const min = Number(minimo ?? 0)
+  const max = Number(maximo ?? min)
+  return min === max ? String(min) : `${min}–${max}`
 }
 
 function erroresIntegrantes(integrantes, instituciones) {
@@ -80,15 +91,25 @@ export default function Inscripcion() {
   const [datos, setDatos] = useState(null)
   const [eventoId, setEventoId] = useState('')
   const [configuracion, setConfiguracion] = useState(null)
+  const [categorias, setCategorias] = useState([])
   const [categoriaId, setCategoriaId] = useState('')
   const [equipo, setEquipo] = useState('')
   const [robot, setRobot] = useState('')
-  const [integrantes, setIntegrantes] = useState(integrantesIniciales)
+  const [integrantes, setIntegrantes] = useState([])
+  const [rosterCategoriaKey, setRosterCategoriaKey] = useState('')
   const [errores, setErrores] = useState({})
   const [cargando, setCargando] = useState(Boolean(token))
   const [enviando, setEnviando] = useState(false)
   const [registro, setRegistro] = useState(null)
   const [vista, setVista] = useState('formulario')
+  const [pasoFormulario, setPasoFormulario] = useState(1)
+  const [toast, setToast] = useState('')
+
+  useEffect(() => {
+    if (!toast) return undefined
+    const timeout = window.setTimeout(() => setToast(''), 3200)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
 
   useEffect(() => {
     if (!token) return undefined
@@ -107,10 +128,15 @@ export default function Inscripcion() {
   useEffect(() => {
     if (!eventoId) return undefined
     let activo = true
-    cargarConfiguracionEvento(eventoId)
-      .then((respuesta) => {
+    setConfiguracion(null)
+    setCategorias([])
+    setIntegrantes([])
+    setRosterCategoriaKey('')
+    Promise.all([cargarConfiguracionEvento(eventoId), cargarCategoriasEvento(eventoId)])
+      .then(([respuesta, reglasCategorias]) => {
         if (!activo) return
         setConfiguracion(respuesta)
+        setCategorias(Array.isArray(reglasCategorias) ? reglasCategorias : [])
       })
       .catch((error) => activo && setErrores((actuales) => ({ ...actuales, configuracion: error.message })))
     return () => { activo = false }
@@ -126,8 +152,20 @@ export default function Inscripcion() {
   const tarifa = configuracionEvento?.tariffs.find(
     (item) => String(item.category_id) === categoriaSeleccionadaId,
   )
+  const reglasCategoria = categorias.find(
+    (item) => String(item.category_id) === categoriaSeleccionadaId && item.is_active,
+  )
+  const rosterCategoriaActual = `${eventoId}:${categoriaSeleccionadaId}`
+  const rosterListo = Boolean(reglasCategoria && rosterCategoriaKey === rosterCategoriaActual)
   const registroAbierto = Boolean(configuracionEvento?.registration_open && configuracionEvento?.is_enabled)
   const institucionesDisponibles = (datos?.instituciones || []).filter(institucionValida)
+
+  useEffect(() => {
+    if (!reglasCategoria || !categoriaSeleccionadaId || rosterCategoriaKey === rosterCategoriaActual) return
+    setIntegrantes(rosterInicial(reglasCategoria))
+    setRosterCategoriaKey(rosterCategoriaActual)
+    setErrores((actuales) => ({ ...actuales, integrantes: null, roster: '', servidor: '' }))
+  }, [reglasCategoria, categoriaSeleccionadaId, rosterCategoriaActual, rosterCategoriaKey])
 
   function actualizarIntegrante(index, campo, valor) {
     setIntegrantes((actuales) => actuales.map((integrante, posicion) => (
@@ -140,20 +178,67 @@ export default function Inscripcion() {
     })
   }
 
+  function ajustarRoster(role, delta) {
+    const minimo = role === 'COACH'
+      ? Number(reglasCategoria?.min_coaches ?? 0)
+      : Math.max(1, Number(reglasCategoria?.min_participants ?? 1))
+    const maximo = role === 'COACH'
+      ? Number(reglasCategoria?.max_coaches ?? 0)
+      : Number(reglasCategoria?.max_participants ?? minimo)
+    const cantidadActual = integrantes.filter((item) => item.role === role).length
+    if (delta > 0 && cantidadActual >= maximo) {
+      setToast(`Acción no permitida. El máximo es ${maximo} ${role === 'COACH' ? 'coach' : 'participantes'}.`)
+      return
+    }
+    setIntegrantes((actuales) => {
+      const cantidad = actuales.filter((item) => item.role === role).length
+      if (delta > 0 && cantidad < maximo) {
+        const nuevo = integranteVacio(role)
+        if (role === 'PARTICIPANT') {
+          const primerCoach = actuales.findIndex((item) => item.role === 'COACH')
+          const insercion = primerCoach < 0 ? actuales.length : primerCoach
+          return [...actuales.slice(0, insercion), nuevo, ...actuales.slice(insercion)]
+        }
+        return [...actuales, nuevo]
+      }
+      if (delta < 0 && cantidad > minimo) {
+        const indice = actuales.map((item) => item.role).lastIndexOf(role)
+        return actuales.filter((_, posicion) => posicion !== indice)
+      }
+      return actuales
+    })
+    setErrores((actuales) => ({ ...actuales, integrantes: null, roster: '', servidor: '' }))
+  }
+
   async function manejarEnvio(evento) {
     evento.preventDefault()
     const nuevosErrores = {}
     if (!equipo.trim()) nuevosErrores.equipo = 'Ingresa el nombre del equipo.'
+    else if (equipo.trim().length > 30) nuevosErrores.equipo = 'Usa máximo 30 caracteres.'
     if (!robot.trim()) nuevosErrores.robot = 'Ingresa el nombre del robot.'
+    else if (robot.trim().length > 30) nuevosErrores.robot = 'Usa máximo 30 caracteres.'
     if (!eventoId) nuevosErrores.evento = 'No hay un evento disponible para inscripción.'
     if (!categoriaSeleccionadaId || !tarifa) nuevosErrores.tarifa = 'No existe una tarifa vigente para este evento y categoría.'
     if (configuracionEvento && !registroAbierto) {
       nuevosErrores.configuracion = 'Las inscripciones para este evento no están abiertas.'
     }
-    const erroresRoster = erroresIntegrantes(integrantes, institucionesDisponibles)
-    if (erroresRoster.some((item) => Object.keys(item).length)) nuevosErrores.integrantes = erroresRoster
+    if (!reglasCategoria || !rosterListo) {
+      nuevosErrores.roster = 'No se han cargado las reglas de integrantes para esta categoría.'
+    } else {
+      const cantidadParticipantes = integrantes.filter((item) => item.role === 'PARTICIPANT').length
+      const cantidadCoaches = integrantes.filter((item) => item.role === 'COACH').length
+      if (cantidadParticipantes < reglasCategoria.min_participants || cantidadParticipantes > reglasCategoria.max_participants
+        || cantidadCoaches < reglasCategoria.min_coaches || cantidadCoaches > reglasCategoria.max_coaches) {
+        nuevosErrores.roster = 'La cantidad de participantes o coaches no cumple las reglas de esta categoría.'
+      }
+      const erroresRoster = erroresIntegrantes(integrantes, institucionesDisponibles)
+      if (erroresRoster.some((item) => Object.keys(item).length)) nuevosErrores.integrantes = erroresRoster
+    }
     setErrores(nuevosErrores)
-    if (Object.keys(nuevosErrores).length) return
+    if (Object.keys(nuevosErrores).length) {
+      setPasoFormulario(nuevosErrores.evento || nuevosErrores.tarifa || nuevosErrores.configuracion ? 1 : 2)
+      return
+    }
 
     setEnviando(true)
     try {
@@ -168,19 +253,46 @@ export default function Inscripcion() {
       })
       setRegistro(respuesta)
     } catch (error) {
-      setErrores({ servidor: error.message })
+      const campo = error.field === 'teamName' ? 'equipo' : error.field === 'robotName' ? 'robot' : null
+      setErrores(campo ? { [campo]: error.message } : { servidor: error.message })
+      if (campo) setPasoFormulario(2)
     } finally {
       setEnviando(false)
     }
   }
 
+  function continuarRevision() {
+    const errorEquipo = !equipo.trim() ? 'Ingresa el nombre del equipo.' : equipo.trim().length > 30 ? 'Usa máximo 30 caracteres.' : ''
+    const errorRobot = !robot.trim() ? 'Ingresa el nombre del robot.' : robot.trim().length > 30 ? 'Usa máximo 30 caracteres.' : ''
+    let errorRoster = ''
+    let erroresMiembros = null
+    if (!reglasCategoria || !rosterListo) {
+      errorRoster = 'Espera a que se carguen las reglas de integrantes.'
+    } else {
+      const participantes = integrantes.filter((item) => item.role === 'PARTICIPANT').length
+      const coaches = integrantes.filter((item) => item.role === 'COACH').length
+      if (participantes < reglasCategoria.min_participants || participantes > reglasCategoria.max_participants
+        || coaches < reglasCategoria.min_coaches || coaches > reglasCategoria.max_coaches) {
+        errorRoster = 'La cantidad de participantes o coaches no cumple las reglas de esta categoría.'
+      }
+      erroresMiembros = erroresIntegrantes(integrantes, institucionesDisponibles)
+      if (erroresMiembros.some((item) => Object.keys(item).length)) errorRoster ||= 'Completa o corrige los datos de cada integrante.'
+    }
+    setErrores((actuales) => ({ ...actuales, equipo: errorEquipo, robot: errorRobot, roster: errorRoster, integrantes: erroresMiembros }))
+    if (errorEquipo || errorRobot || errorRoster) return
+    setErrores((actuales) => ({ ...actuales, equipo: '', robot: '', roster: '', integrantes: null }))
+    setPasoFormulario(3)
+  }
+
   function nuevaInscripcion() {
     setEquipo('')
     setRobot('')
-    setIntegrantes(integrantesIniciales())
+    setIntegrantes(reglasCategoria ? rosterInicial(reglasCategoria) : [])
+    setRosterCategoriaKey(rosterCategoriaActual)
     setErrores({})
     setRegistro(null)
     setVista('formulario')
+    setPasoFormulario(1)
   }
 
   if (!token) {
@@ -226,12 +338,26 @@ export default function Inscripcion() {
         </div>
       </div>
 
+      <div className="registration-progress" aria-label={`Paso ${pasoFormulario} de 3`}>
+        <div className="registration-progress-heading"><span>Inscripción</span><strong>Paso {pasoFormulario} de 3</strong></div>
+        <ol>
+          {[['Evento', 'event'], ['Equipo e integrantes', 'team'], ['Revisión', 'review']].map(([label, key], index) => (
+            <li key={key} className={pasoFormulario === index + 1 ? 'is-current' : pasoFormulario > index + 1 ? 'is-complete' : ''}
+              aria-current={pasoFormulario === index + 1 ? 'step' : undefined}>
+              <span>{index + 1}</span>{label}
+            </li>
+          ))}
+        </ol>
+      </div>
+      {errores.servidor && <p className="form-error" role="alert">{errores.servidor}</p>}
+
+      {pasoFormulario === 1 && <>
       <div className="form-grid">
         <label htmlFor="evento">Evento
           <select id="evento" value={eventoId} onChange={(event) => {
             setEventoId(event.target.value)
             setCategoriaId('')
-            setErrores((actuales) => ({ ...actuales, configuracion: '', evento: '', tarifa: '' }))
+            setErrores((actuales) => ({ ...actuales, configuracion: '', evento: '', tarifa: '', roster: '' }))
           }} disabled={!datos?.eventos.length}>
             {datos?.eventos.map((evento) => <option key={evento.id} value={evento.id}>{evento.name} {evento.edition_year}</option>)}
           </select>
@@ -239,7 +365,8 @@ export default function Inscripcion() {
         <label htmlFor="categoria">Categoría
           <select id="categoria" value={categoriaSeleccionadaId} onChange={(event) => {
             setCategoriaId(event.target.value)
-            setErrores((actuales) => ({ ...actuales, tarifa: '' }))
+            setRosterCategoriaKey('')
+            setErrores((actuales) => ({ ...actuales, tarifa: '', roster: '', servidor: '' }))
           }} disabled={cargandoConfiguracion || !configuracionEvento?.tariffs.length}>
             {!configuracionEvento?.tariffs.length && <option value="">Sin categorías con tarifa vigente</option>}
             {configuracionEvento?.tariffs.map((item) => (
@@ -249,6 +376,20 @@ export default function Inscripcion() {
         </label>
       </div>
 
+      {errores.configuracion && <p className="form-error" role="alert">{errores.configuracion}</p>}
+      {errores.evento && <p className="form-error" role="alert">{errores.evento}</p>}
+      {errores.tarifa && <p className="form-error" role="alert">{errores.tarifa}</p>}
+      {configuracionEvento && !registroAbierto && <p className="registration-closed" role="status">Las inscripciones de este evento están cerradas o deshabilitadas.</p>}
+      <button className="primary-button" type="button" onClick={() => {
+        if (!eventoId) { setErrores((actuales) => ({ ...actuales, evento: 'Selecciona un evento.' })); return }
+        if (!categoriaSeleccionadaId || !tarifa) { setErrores((actuales) => ({ ...actuales, tarifa: 'Selecciona una categoría con tarifa vigente.' })); return }
+        if (!registroAbierto) { setErrores((actuales) => ({ ...actuales, configuracion: 'Las inscripciones para este evento no están abiertas.' })); return }
+        setErrores((actuales) => ({ ...actuales, evento: '', tarifa: '', configuracion: '' }))
+        setPasoFormulario(2)
+      }}>Continuar con el equipo <span aria-hidden="true"> →</span></button>
+      </>}
+
+      {pasoFormulario === 2 && <>
       <div className="form-grid">
         <label htmlFor="equipo">Nombre del equipo
           <input id="equipo" maxLength="30" value={equipo} onChange={(event) => {
@@ -268,12 +409,15 @@ export default function Inscripcion() {
 
       <div className="members-heading">
         <h2>Integrantes de la inscripción</h2>
-        <p>Ingresa los datos de los dos participantes y del coach que conforman el equipo.</p>
+        {reglasCategoria ? (
+          <p>Participantes: {rangoRoster(reglasCategoria.min_participants, reglasCategoria.max_participants)} · Coaches: {rangoRoster(reglasCategoria.min_coaches, reglasCategoria.max_coaches)}.</p>
+        ) : <p>Cargando los límites de integrantes de la categoría...</p>}
       </div>
 
-      {integrantes.map((integrante, index) => {
-        const nombre = integrante.role === 'COACH' ? 'Coach' : `Participante ${index + 1}`
-        const sufijo = integrante.role === 'COACH' ? 'coach' : `participante-${index + 1}`
+      {rosterListo && integrantes.map((integrante, index) => {
+        const indiceRol = integrantes.slice(0, index).filter((item) => item.role === integrante.role).length + 1
+        const nombre = integrante.role === 'COACH' ? `Coach ${indiceRol}` : `Participante ${indiceRol}`
+        const sufijo = integrante.role === 'COACH' ? `coach-${indiceRol}` : `participante-${indiceRol}`
         const errorCampo = errores.integrantes?.[index] || {}
         return (
           <fieldset className="member-fields" key={sufijo}>
@@ -316,14 +460,49 @@ export default function Inscripcion() {
         )
       })}
 
-      {errores.configuracion && <p className="form-error" role="alert">{errores.configuracion}</p>}
-      {configuracionEvento && !registroAbierto && <p className="registration-closed" role="status">Las inscripciones de este evento están cerradas o deshabilitadas.</p>}
-      {errores.servidor && <p className="form-error" role="alert">{errores.servidor}</p>}
+      {rosterListo && (() => {
+        const participantes = integrantes.filter((item) => item.role === 'PARTICIPANT').length
+        const coaches = integrantes.filter((item) => item.role === 'COACH').length
+        return <div className="roster-actions">
+          <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('PARTICIPANT', 1)}>Añadir participante</button>
+          {participantes > Math.max(1, reglasCategoria.min_participants) && <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('PARTICIPANT', -1)}>Quitar participante</button>}
+          <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('COACH', 1)}>Añadir coach</button>
+          {coaches > reglasCategoria.min_coaches && <button type="button" className="participant-mode-toggle" onClick={() => ajustarRoster('COACH', -1)}>Quitar coach</button>}
+        </div>
+      })()}
+
+      {errores.roster && <p className="form-error" role="alert">{errores.roster}</p>}
+      <div className="registration-step-actions">
+        <button className="secondary-button" type="button" onClick={() => setPasoFormulario(1)}>Volver al evento</button>
+        <button className="primary-button" type="button" onClick={continuarRevision} disabled={!rosterListo}>
+          Revisar datos <span aria-hidden="true"> →</span>
+        </button>
+      </div>
+      </>}
+
+      {pasoFormulario === 3 && <>
+        <section className="registration-review" aria-labelledby="registration-review-title">
+          <h2 id="registration-review-title">Revisa la inscripción</h2>
+          <p>Confirma que los datos del evento y del equipo estén correctos antes de crear la orden de pago.</p>
+          <dl>
+            <div><dt>Evento</dt><dd>{datos?.eventos.find((evento) => String(evento.id) === eventoId)?.name || '—'}</dd></div>
+            <div><dt>Categoría</dt><dd>{tarifa?.category || '—'}</dd></div>
+            <div><dt>Equipo</dt><dd>{equipo || '—'}</dd></div>
+            <div><dt>Robot</dt><dd>{robot || '—'}</dd></div>
+            <div><dt>Participantes y coaches</dt><dd>{integrantes.filter((item) => item.role === 'PARTICIPANT').length} participantes · {integrantes.filter((item) => item.role === 'COACH').length} coaches</dd></div>
+            <div><dt>Total de inscripción</dt><dd>{tarifa ? `${configuracionEvento.currency || 'USD'} ${Number(tarifa.amount).toFixed(2)}` : '—'}</dd></div>
+          </dl>
+        </section>
+        <div className="registration-step-actions">
+          <button className="secondary-button" type="button" onClick={() => setPasoFormulario(2)}>Volver a editar el equipo</button>
       <button className="primary-button" type="submit"
-        disabled={enviando || cargandoConfiguracion || !datos || !registroAbierto || !tarifa}>
+        disabled={enviando || cargandoConfiguracion || !datos || !registroAbierto || !tarifa || !rosterListo}>
         {enviando ? 'Creando inscripción...' : 'Crear inscripción y orden de pago'}
         {!enviando && <span aria-hidden="true"> →</span>}
       </button>
+        </div>
+      </>}
     </form>
+    {toast && <div className="registration-toast" role="alert" aria-live="assertive">{toast}</div>}
   </section>
 }

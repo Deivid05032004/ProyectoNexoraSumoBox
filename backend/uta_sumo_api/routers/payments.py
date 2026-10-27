@@ -261,6 +261,34 @@ def download_receipt(payment_id: int, user=Depends(get_current_user), db: Sessio
                              "Cache-Control": "no-store"})
 
 
+@router.get("/{payment_id}/receipt/preview")
+def preview_receipt(payment_id: int, _user=Depends(require_roles("ADMIN")),
+                    db: Session = Depends(get_db)):
+    """Serve a current payment proof inline to authorized administrators only."""
+    payment = _payment(db, payment_id)
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Pago no encontrado.")
+    key = payment.get("receipt_key")
+    if not key:
+        raise HTTPException(status_code=404, detail="El pago no tiene comprobante.")
+    root = RECEIPT_STORAGE_DIR.resolve()
+    path = (root / key).resolve()
+    if path.parent != root or not path.is_file():
+        raise HTTPException(status_code=404, detail="Comprobante no disponible.")
+    try:
+        content = path.read_bytes()
+        if payment.get("receipt_encryption_version") == 1:
+            content = decrypt_bytes(content)
+    except (OSError, ValueError):
+        raise HTTPException(status_code=500, detail="No se pudo descifrar el comprobante almacenado.")
+    return Response(content=content, media_type=payment["receipt_media_type"], headers={
+        "Content-Disposition": f'inline; filename="comprobante-{payment_id}{path.suffix}"',
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "frame-ancestors 'self'",
+    })
+
+
 @router.post("/{payment_id}/review")
 def review_payment(payment_id: int, payload: PaymentReview,
                    user=Depends(require_roles("ADMIN")),

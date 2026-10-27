@@ -80,6 +80,8 @@ def list_admin_registrations(
           rs.Code AS registration_status,p.PaymentId AS payment_id,p.PaymentStatus AS payment_status,
           p.Amount AS amount,p.CurrencyCode AS currency,p.PaymentReference AS payment_reference_ciphertext,
           p.VerifiedAt AS payment_verified_at,p.VerifiedByUserId AS payment_verified_by,
+          CASE WHEN pr.ReceiptId IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS has_receipt,
+          pr.UploadedAt AS receipt_uploaded_at,
           (SELECT TOP (1) h.Comments FROM dbo.StatusHistory h
              WHERE h.RegistrationId=r.RegistrationId ORDER BY h.ChangedAt DESC,h.HistoryId DESC) AS latest_review_comments
         FROM dbo.Registrations r
@@ -88,6 +90,7 @@ def list_admin_registrations(
         JOIN dbo.Teams t ON t.TeamId=r.TeamId JOIN dbo.Robots b ON b.RobotId=r.RobotId
         LEFT JOIN dbo.Users u ON u.UserId=r.CreatedByUserId
         LEFT JOIN dbo.Payments p ON p.RegistrationId=r.RegistrationId
+        LEFT JOIN dbo.PaymentReceipts pr ON pr.PaymentId=p.PaymentId AND pr.IsCurrent=1
         {where}
         ORDER BY r.RegisteredAt DESC,r.RegistrationId DESC
         OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY

@@ -20,6 +20,24 @@ export async function apiRequest(path, options = {}) {
   return response.json();
 }
 
+export async function apiBlob(path) {
+  const token = sessionStorage.getItem('uta.access_token');
+  const headers = new Headers();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const response = await fetch(`${API_BASE}${path}`, { headers });
+  if (!response.ok) {
+    let message = `Error HTTP ${response.status}`;
+    try {
+      const body = await response.json();
+      message = Array.isArray(body.detail)
+        ? body.detail.map((item) => item.msg).join(' ')
+        : body.detail || message;
+    } catch { /* respuesta sin cuerpo JSON */ }
+    throw new Error(message);
+  }
+  return response.blob();
+}
+
 export function getAdminUser() {
   try { return JSON.parse(sessionStorage.getItem('uta.user') || 'null'); }
   catch { return null; }

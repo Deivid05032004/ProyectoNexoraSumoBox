@@ -88,6 +88,12 @@ class MatchInput(BaseModel):
         return self
 
 
+class MatchTimerConfig(BaseModel):
+    enabled: bool
+    duration_seconds: int = Field(ge=1, le=5999)
+    direction: str = Field(default="DOWN", pattern="^(UP|DOWN)$")
+
+
 def _leaderboard(db: Session, event_id: int, category_id: int | None):
     rows = db.execute(text("""
       SELECT r.CategoryId AS category_id,c.Name AS category,t.TeamId AS team_id,t.Name AS team,
@@ -390,7 +396,24 @@ def list_matches(event_id: int, round_id: int | None = Query(default=None, gt=0)
 def _current_combat_snapshot(db: Session) -> dict:
     rows = db.execute(text("""
       SELECT m.MatchId AS match_id,m.MatchNumber AS match_number,m.MatchStatus AS match_status,
-        m.PublicDetails AS details,
+        m.PublicDetails AS details,m.TimerEnabled AS timer_enabled,
+        m.TimerDurationSeconds AS timer_duration_seconds,m.TimerStatus AS timer_status,
+        m.TimerDirection AS timer_direction,
+        m.TimerStartedAt AS timer_started_at,m.TimerUpdatedAt AS timer_updated_at,
+        CASE
+          WHEN m.TimerStatus='RUNNING' AND m.TimerDirection='DOWN' THEN
+            CASE WHEN m.TimerRemainingSeconds-DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME())<0
+                 THEN 0 ELSE m.TimerRemainingSeconds-DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME()) END
+          WHEN m.TimerStatus='RUNNING' AND m.TimerDirection='UP' THEN
+            CASE WHEN m.TimerElapsedSeconds+DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME())>m.TimerDurationSeconds
+                 THEN m.TimerDurationSeconds ELSE m.TimerElapsedSeconds+DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME()) END
+          WHEN m.TimerDirection='UP' THEN m.TimerElapsedSeconds
+          ELSE m.TimerRemainingSeconds
+        END AS timer_current_seconds,
+        CASE WHEN m.TimerStatus='RUNNING' AND (
+               (m.TimerDirection='DOWN' AND m.TimerRemainingSeconds-DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME())<=0)
+               OR (m.TimerDirection='UP' AND m.TimerElapsedSeconds+DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME())>=m.TimerDurationSeconds))
+             THEN 'FINISHED' ELSE m.TimerStatus END AS timer_display_status,
         e.EventId AS event_id,e.Name AS event_name,e.CompetitionStatus AS event_status,
         cr.RoundId AS round_id,cr.CategoryId AS category_id,c.Name AS category_name,
         mt.TeamId AS team_id,t.Name AS team_name,i.Name AS institution_name,
@@ -432,7 +455,12 @@ def _current_combat_snapshot(db: Session) -> dict:
                 "categoria": None, "robotA": {"nombre": "Por definir", "institucion": "Sin asignar", "puntos": 0},
                 "robotB": {"nombre": "Por definir", "institucion": "Sin asignar", "puntos": 0},
                 "ganador": "No definido", "detalles": "", "updated_at": None,
-                "ultimaActualizacion": "--:--"}
+                "ultimaActualizacion": "--:--",
+                "cronometro": {"enabled": False, "direction": "DOWN", "duration_seconds": 180,
+                               "current_seconds": 180, "remaining_seconds": 180,
+                               "elapsed_seconds": 0, "status": "STOPPED",
+                               "started_at": None, "updated_at": None},
+                "tiempoSegundos": 180, "cronometroActivo": False}
     if len(rows) != 2:
         raise HTTPException(503, "El combate actual debe tener exactamente dos equipos.")
     first, second = rows
@@ -460,6 +488,19 @@ def _current_combat_snapshot(db: Session) -> dict:
     else:
         winner = decrypt_text(first["robot_name"] if first_points > second_points else second["robot_name"])
     updated_at = first["updated_at"]
+    timer_current = max(0, min(int(first["timer_duration_seconds"]), int(first["timer_current_seconds"])))
+    timer_direction = first["timer_direction"]
+    timer = {
+        "enabled": bool(first["timer_enabled"]),
+        "duration_seconds": int(first["timer_duration_seconds"]),
+        "direction": timer_direction,
+        "current_seconds": timer_current,
+        "remaining_seconds": timer_current if timer_direction == "DOWN" else int(first["timer_duration_seconds"]) - timer_current,
+        "elapsed_seconds": int(first["timer_duration_seconds"]) - timer_current if timer_direction == "DOWN" else timer_current,
+        "status": first["timer_display_status"],
+        "started_at": first["timer_started_at"].isoformat() if first["timer_started_at"] else None,
+        "updated_at": first["timer_updated_at"].isoformat() if first["timer_updated_at"] else None,
+    }
     robot_a = {"nombre": decrypt_text(first["robot_name"]),
                "institucion": first["institution_name"], "puntos": first_points}
     robot_b = {"nombre": decrypt_text(second["robot_name"]),
@@ -486,6 +527,9 @@ def _current_combat_snapshot(db: Session) -> dict:
         "categoria": first["category_name"],
         "robotA": robot_a, "robotB": robot_b, "ganador": winner,
         "detalles": first["details"] or "",
+        "cronometro": timer,
+        "tiempoSegundos": timer["current_seconds"],
+        "cronometroActivo": timer["enabled"] and timer["status"] == "RUNNING",
         "updated_at": updated_at.isoformat() if updated_at else None,
         "ultimaActualizacion": updated_at.strftime("%H:%M") if updated_at else "--:--",
     }
@@ -497,6 +541,145 @@ def _load_current_combat_snapshot() -> dict:
         return _current_combat_snapshot(db)
     finally:
         db.close()
+
+
+def _apply_match_timer_change(action: str, user: dict, config: MatchTimerConfig | None = None) -> dict:
+    db = SessionLocal()
+    try:
+        match = db.execute(text("""
+          SELECT m.MatchId,m.MatchStatus AS MatchStatus,e.CompetitionStatus AS EventStatus,
+            m.TimerEnabled,m.TimerDurationSeconds,m.TimerRemainingSeconds,
+            m.TimerElapsedSeconds,m.TimerDirection,m.TimerStatus,m.TimerStartedAt,
+            CASE
+              WHEN m.TimerStatus='RUNNING' AND m.TimerDirection='DOWN' THEN
+                CASE WHEN m.TimerRemainingSeconds-DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME())<0
+                     THEN 0 ELSE m.TimerRemainingSeconds-DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME()) END
+              WHEN m.TimerStatus='RUNNING' AND m.TimerDirection='UP' THEN
+                CASE WHEN m.TimerElapsedSeconds+DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME())>m.TimerDurationSeconds
+                     THEN m.TimerDurationSeconds ELSE m.TimerElapsedSeconds+DATEDIFF_BIG(SECOND,m.TimerStartedAt,SYSUTCDATETIME()) END
+              WHEN m.TimerDirection='UP' THEN m.TimerElapsedSeconds
+              ELSE m.TimerRemainingSeconds
+            END AS CurrentNow
+          FROM dbo.ActiveCombat ac WITH (UPDLOCK,HOLDLOCK)
+          JOIN dbo.CompetitionMatches m WITH (UPDLOCK,HOLDLOCK) ON m.MatchId=ac.MatchId
+          JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+          JOIN dbo.Events e ON e.EventId=cr.EventId
+          WHERE ac.ActiveCombatId=1
+        """)).mappings().first()
+        if match is None:
+            raise HTTPException(404, "No hay un combate activo para controlar el cronómetro.")
+
+        if action == "configure":
+            assert config is not None
+            db.execute(text("""
+              UPDATE dbo.CompetitionMatches SET TimerEnabled=:enabled,
+                TimerDurationSeconds=:duration,TimerRemainingSeconds=:duration,
+                TimerElapsedSeconds=0,TimerDirection=:direction,
+                TimerStatus=CASE WHEN :enabled=1 AND :match_status='LIVE' AND :event_status='LIVE'
+                                  THEN 'RUNNING'
+                                 WHEN :enabled=1 AND :match_status='LIVE' AND :event_status='PAUSED'
+                                  THEN 'PAUSED' ELSE 'STOPPED' END,
+                TimerStartedAt=CASE WHEN :enabled=1 AND :match_status='LIVE' AND :event_status='LIVE'
+                                    THEN SYSUTCDATETIME() ELSE NULL END,
+                TimerUpdatedAt=SYSUTCDATETIME()
+              WHERE MatchId=:match
+            """), {"enabled": config.enabled, "duration": config.duration_seconds,
+                  "direction": config.direction,
+                  "match_status": match["MatchStatus"], "event_status": match["EventStatus"],
+                  "match": match["MatchId"]})
+        elif action == "start":
+            if not match["TimerEnabled"]:
+                raise HTTPException(409, "Activa el cronómetro antes de iniciarlo.")
+            current = int(match["CurrentNow"])
+            exhausted = (current <= 0 if match["TimerDirection"] == "DOWN"
+                         else current >= int(match["TimerDurationSeconds"]))
+            if exhausted:
+                db.execute(text("""
+                  UPDATE dbo.CompetitionMatches SET TimerStatus='FINISHED',TimerStartedAt=NULL,
+                    TimerUpdatedAt=SYSUTCDATETIME() WHERE MatchId=:match
+                """), {"match": match["MatchId"]})
+            elif match["TimerStatus"] != "RUNNING":
+                if match["TimerDirection"] == "DOWN":
+                    db.execute(text("UPDATE dbo.CompetitionMatches SET TimerRemainingSeconds=:current WHERE MatchId=:match"),
+                               {"current": current, "match": match["MatchId"]})
+                else:
+                    db.execute(text("UPDATE dbo.CompetitionMatches SET TimerElapsedSeconds=:current WHERE MatchId=:match"),
+                               {"current": current, "match": match["MatchId"]})
+                db.execute(text("""
+                  UPDATE dbo.CompetitionMatches SET TimerStatus='RUNNING',
+                    TimerStartedAt=SYSUTCDATETIME(),TimerUpdatedAt=SYSUTCDATETIME()
+                  WHERE MatchId=:match
+                """), {"match": match["MatchId"]})
+        elif action == "pause":
+            if match["TimerStatus"] == "RUNNING":
+                current = int(match["CurrentNow"])
+                finished = (current <= 0 if match["TimerDirection"] == "DOWN"
+                            else current >= int(match["TimerDurationSeconds"]))
+                if match["TimerDirection"] == "DOWN":
+                    db.execute(text("""
+                      UPDATE dbo.CompetitionMatches SET TimerRemainingSeconds=:current,
+                        TimerStatus=:status,TimerStartedAt=NULL,TimerUpdatedAt=SYSUTCDATETIME()
+                      WHERE MatchId=:match
+                    """), {"current": current, "status": "FINISHED" if finished else "PAUSED",
+                          "match": match["MatchId"]})
+                else:
+                    db.execute(text("""
+                      UPDATE dbo.CompetitionMatches SET TimerElapsedSeconds=:current,
+                        TimerStatus=:status,TimerStartedAt=NULL,TimerUpdatedAt=SYSUTCDATETIME()
+                      WHERE MatchId=:match
+                    """), {"current": current, "status": "FINISHED" if finished else "PAUSED",
+                          "match": match["MatchId"]})
+        elif action == "reset":
+            db.execute(text("""
+              UPDATE dbo.CompetitionMatches SET TimerRemainingSeconds=TimerDurationSeconds,
+                TimerElapsedSeconds=0,TimerStatus='STOPPED',TimerStartedAt=NULL,
+                TimerUpdatedAt=SYSUTCDATETIME() WHERE MatchId=:match
+            """), {"match": match["MatchId"]})
+        else:
+            raise HTTPException(422, "Operación de cronómetro desconocida.")
+
+        db.execute(text("""
+          UPDATE dbo.ActiveCombat SET UpdatedByUserId=:actor,UpdatedAt=SYSUTCDATETIME()
+          WHERE ActiveCombatId=1 AND MatchId=:match
+        """), {"actor": user["user_id"], "match": match["MatchId"]})
+        db.execute(text("""
+          INSERT dbo.ActiveCombatHistory(PreviousMatchId,NewMatchId,ActorUserId,ActionCode,Reason)
+          VALUES(:match,:match,:actor,'TIMER_CHANGED',:reason)
+        """), {"match": match["MatchId"], "actor": user["user_id"], "reason": action.upper()})
+        snapshot = _current_combat_snapshot(db)
+        db.commit()
+        return snapshot
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "No se pudo actualizar el cronómetro por un conflicto de integridad.")
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _pause_match_timer(db: Session, match_id: int) -> None:
+    db.execute(text("""
+      UPDATE dbo.CompetitionMatches SET
+        TimerRemainingSeconds=CASE WHEN TimerDirection='DOWN' THEN
+          CASE WHEN TimerRemainingSeconds-DATEDIFF_BIG(SECOND,TimerStartedAt,SYSUTCDATETIME())<0
+               THEN 0 ELSE TimerRemainingSeconds-DATEDIFF_BIG(SECOND,TimerStartedAt,SYSUTCDATETIME()) END
+          ELSE TimerRemainingSeconds END,
+        TimerElapsedSeconds=CASE WHEN TimerDirection='UP' THEN
+          CASE WHEN TimerElapsedSeconds+DATEDIFF_BIG(SECOND,TimerStartedAt,SYSUTCDATETIME())>TimerDurationSeconds
+               THEN TimerDurationSeconds ELSE TimerElapsedSeconds+DATEDIFF_BIG(SECOND,TimerStartedAt,SYSUTCDATETIME()) END
+          ELSE TimerElapsedSeconds END,
+        TimerStatus=CASE WHEN
+          (TimerDirection='DOWN' AND TimerRemainingSeconds-DATEDIFF_BIG(SECOND,TimerStartedAt,SYSUTCDATETIME())<=0)
+          OR (TimerDirection='UP' AND TimerElapsedSeconds+DATEDIFF_BIG(SECOND,TimerStartedAt,SYSUTCDATETIME())>=TimerDurationSeconds)
+          THEN 'FINISHED' ELSE 'PAUSED' END,
+        TimerStartedAt=NULL,TimerUpdatedAt=SYSUTCDATETIME()
+      WHERE MatchId=:match AND TimerStatus='RUNNING'
+    """), {"match": match_id})
 
 
 def _write_event_status(db: Session, event_id: int, target: str, actor_id: int,
@@ -580,8 +763,23 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
                 _write_event_status(db, match["event_id"], "LIVE", user["user_id"], payload.reason)
             elif payload.status == "PAUSADO":
                 _write_event_status(db, match["event_id"], "PAUSED", user["user_id"], payload.reason)
+            if payload.status in {"PAUSADO", "FINALIZADO", "CANCELADO"}:
+                # Stopping/finishing a match must not leave its official timer
+                # counting in the background. Resuming a match requires an
+                # explicit timer start from authorized staff.
+                _pause_match_timer(db, match_id)
             db.execute(text("UPDATE dbo.CompetitionMatches SET MatchStatus=:status WHERE MatchId=:id"),
                        {"status": effective_match_status, "id": match_id})
+            if payload.status == "EN_VIVO":
+                # Start or resume the configured clock in the same transaction
+                # as the match transition; spectators receive both together.
+                db.execute(text("""
+                  UPDATE dbo.CompetitionMatches SET TimerStatus='RUNNING',
+                    TimerStartedAt=SYSUTCDATETIME(),TimerUpdatedAt=SYSUTCDATETIME()
+                  WHERE MatchId=:id AND TimerEnabled=1 AND TimerStatus IN ('STOPPED','PAUSED')
+                    AND ((TimerDirection='DOWN' AND TimerRemainingSeconds>0)
+                      OR (TimerDirection='UP' AND TimerElapsedSeconds<TimerDurationSeconds))
+                """), {"id": match_id})
         details_changed = ("details" in payload.model_fields_set
                            and payload.details != match["public_details"])
         if details_changed:
@@ -617,6 +815,17 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
 
         pointer_changed = current_match_id != match_id
         if pointer_changed:
+            if current_match_id is not None:
+                old_timer = db.execute(text("""
+                  SELECT TimerStatus FROM dbo.CompetitionMatches WITH (UPDLOCK,HOLDLOCK)
+                  WHERE MatchId=:match
+                """), {"match": current_match_id}).scalar_one_or_none()
+                if old_timer == "RUNNING":
+                    _pause_match_timer(db, current_match_id)
+                    db.execute(text("""
+                      INSERT dbo.ActiveCombatHistory(PreviousMatchId,NewMatchId,ActorUserId,ActionCode,Reason)
+                      VALUES(:match,:match,:actor,'TIMER_CHANGED','DEACTIVATED')
+                    """), {"match": current_match_id, "actor": user["user_id"]})
             if current_match_id is None:
                 db.execute(text("""
                   INSERT dbo.ActiveCombat(ActiveCombatId,MatchId,UpdatedByUserId)
@@ -692,6 +901,24 @@ def get_current_combat(db: Session = Depends(get_db)):
 async def update_current_combat(payload: CurrentCombatUpdate,
                                 user=Depends(require_roles(*STAFF))):
     snapshot = await asyncio.to_thread(_apply_current_combat_update, payload, user)
+    await live_combat_connections.broadcast(snapshot)
+    return snapshot
+
+
+@router.put("/competition/combate-actual/cronometro")
+async def configure_current_combat_timer(payload: MatchTimerConfig,
+                                         user=Depends(require_roles(*STAFF))):
+    snapshot = await asyncio.to_thread(_apply_match_timer_change, "configure", user, payload)
+    await live_combat_connections.broadcast(snapshot)
+    return snapshot
+
+
+@router.post("/competition/combate-actual/cronometro/{action}")
+async def control_current_combat_timer(action: str,
+                                      user=Depends(require_roles(*STAFF))):
+    if action not in {"start", "pause", "reset"}:
+        raise HTTPException(404, "Operación de cronómetro no encontrada.")
+    snapshot = await asyncio.to_thread(_apply_match_timer_change, action, user)
     await live_combat_connections.broadcast(snapshot)
     return snapshot
 

@@ -1,4 +1,4 @@
-"""Import a supplied event regulation PDF as encrypted, versioned local data."""
+"""Import a PDF into SQL Server as encrypted, versioned regulation content."""
 from __future__ import annotations
 
 import argparse
@@ -9,9 +9,10 @@ from pathlib import Path
 API_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_DIR))
 
-from sqlalchemy import text
+from sqlalchemy import LargeBinary, bindparam, text
 
-from app.services.regulation_storage import validate_pdf, write_pdf, delete_pdf
+from app.core.crypto import encrypt_bytes
+from app.services.regulation_storage import safe_filename, validate_pdf
 from database import engine
 
 
@@ -32,9 +33,7 @@ def main() -> int:
         parser.error("El título debe tener entre 1 y 200 caracteres.")
     content = args.file.read_bytes()
     digest, page_count = validate_pdf(content)
-    storage_key = write_pdf(content)
-    try:
-        with engine.begin() as conn:
+    with engine.begin() as conn:
             if conn.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"),
                             {"id": args.event_id}).first() is None:
                 raise SystemExit("El evento indicado no existe.")
@@ -48,14 +47,16 @@ def main() -> int:
             """), {"event": args.event_id, "category": args.category_id}).scalar_one()
             regulation_id = conn.execute(text("""
                 INSERT INTO dbo.EventRegulations
-                  (EventId,CategoryId,Title,VersionNumber,OriginalFilename,StorageKey,MediaType,
-                   FileSizeBytes,Sha256,StatusCode,EffectiveFrom,UploadedByUserId)
+                  (EventId,CategoryId,Title,VersionNumber,OriginalFilename,MediaType,
+                   FileSizeBytes,Sha256,StatusCode,EffectiveFrom,UploadedByUserId,FileContent)
                 OUTPUT INSERTED.RegulationId
-                VALUES(:event,:category,:title,:version,:filename,:key,'application/pdf',
-                       :size,:sha256,'DRAFT',:effective,NULL)
-            """), {"event": args.event_id, "category": args.category_id, "title": title,
-                  "version": version, "filename": args.file.name[:255], "key": storage_key,
-                  "size": len(content), "sha256": digest, "effective": date.today()}).scalar_one()
+                VALUES(:event,:category,:title,:version,:filename,'application/pdf',
+                       :size,:sha256,'DRAFT',:effective,NULL,:content)
+            """).bindparams(bindparam("content", type_=LargeBinary)),
+                {"event": args.event_id, "category": args.category_id, "title": title,
+                 "version": version, "filename": safe_filename(args.file.name),
+                 "size": len(content), "sha256": digest, "effective": date.today(),
+                 "content": encrypt_bytes(content)}).scalar_one()
             conn.execute(text("""
                 INSERT INTO dbo.EventRegulationHistory(RegulationId,ActorUserId,ActionCode,PreviousStatus,NewStatus)
                 VALUES(:id,NULL,'CREATED',NULL,'DRAFT')
@@ -84,9 +85,6 @@ def main() -> int:
                       (RegulationId,ActorUserId,ActionCode,PreviousStatus,NewStatus)
                     VALUES(:id,NULL,'PUBLISHED','DRAFT','PUBLISHED')
                 """), {"id": regulation_id})
-    except Exception:
-        delete_pdf(storage_key)
-        raise
     print(f"Reglamento importado: id={regulation_id}, version={version}, pages={page_count}, status={'PUBLISHED' if args.publish else 'DRAFT'}")
     return 0
 

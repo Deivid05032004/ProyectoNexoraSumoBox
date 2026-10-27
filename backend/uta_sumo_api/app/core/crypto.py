@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import os
+import unicodedata
 from functools import lru_cache
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -64,6 +65,20 @@ def payment_reference_lookup_hash(reference: str | None) -> str | None:
     key = hmac.new(_key(), b"uta-sumo-payment-reference-index:v1", hashlib.sha256).digest()
     normalized = " ".join(reference.strip().casefold().split())
     return hmac.new(key, normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def normalize_resource_name(name: str) -> str:
+    """Canonical comparison form for team and robot names."""
+    return " ".join(unicodedata.normalize("NFKC", name).casefold().split())
+
+
+def resource_name_lookup_hash(name: str, resource_type: str) -> str:
+    """Keyed index for uniqueness checks without storing names in plaintext."""
+    if resource_type not in {"team", "robot"}:
+        raise ValueError("resource_type debe ser 'team' o 'robot'.")
+    key = hmac.new(_key(), b"uta-sumo-resource-name-index:v1", hashlib.sha256).digest()
+    value = f"{resource_type}:{normalize_resource_name(name)}".encode("utf-8")
+    return hmac.new(key, value, hashlib.sha256).hexdigest()
 
 
 def encrypt_bytes(value: bytes) -> bytes:

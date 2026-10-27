@@ -24,5 +24,7 @@ dist/
 
 # Logs y archivos temporales
 *.log
+/tmp/
+/output/pdf/Guia_integracion_correo_frontend.pdf
 .DS_Store
 Thumbs.db

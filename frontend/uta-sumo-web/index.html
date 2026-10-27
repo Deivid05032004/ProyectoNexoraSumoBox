@@ -7,6 +7,15 @@
     <meta name="theme-color" content="#0f1217" />
     <meta name="description" content="Inscripciones UTA SUMO ROBOTICS CUP" />
     <title>UTA SUMO ROBOTICS CUP</title>
+    <script>
+      // Google OAuth authorizes the configured origin exactly. Keep local
+      // development on localhost, which is the origin registered in Google Cloud.
+      if (window.location.hostname === '127.0.0.1') {
+        const canonicalUrl = new URL(window.location.href);
+        canonicalUrl.hostname = 'localhost';
+        window.location.replace(canonicalUrl.href);
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

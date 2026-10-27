@@ -453,6 +453,13 @@
   line-height: 1;
 }
 
+.timer-server-status {
+  color: #8b949e;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
 .timer-controls-row {
   display: flex;
   gap: 0.5rem;

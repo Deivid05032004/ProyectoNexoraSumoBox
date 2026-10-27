@@ -1,4 +1,4 @@
-import { apiRequest } from './adminApi';
+import { apiBlob, apiRequest } from './adminApi';
 
 const statusLabels = {
   PENDING: 'Pendiente', APPROVED: 'Aprobado', OBSERVED: 'Observado',
@@ -17,6 +17,7 @@ function mapRegistration(row, detail = {}) {
     id: row.id,
     codigo: row.code,
     fecha: row.registered_at ? new Date(row.registered_at).toLocaleDateString() : '',
+    equipo: row.team_name || detail.team_name || '—',
     robot: row.robot_name || detail.robot_name || '—',
     institucion: people[0]?.institution_name || '—',
     categoria: row.category_name || detail.category_name || '—',
@@ -32,6 +33,8 @@ function mapRegistration(row, detail = {}) {
     paymentId: row.payment_id,
     paymentStatus: row.payment_status,
     paymentStatusLabel: paymentStatusLabels[row.payment_status] || 'Sin pago',
+    hasReceipt: Boolean(row.has_receipt),
+    receiptUploadedAt: row.receipt_uploaded_at,
     revisor: row.payment_verified_by ? String(row.payment_verified_by) : null,
     raw: row,
   };
@@ -75,18 +78,18 @@ export async function actualizarEstadoInscripcion(id, nuevoEstado) {
   });
 }
 
-export async function actualizarEstadoPago(paymentId, status) {
+export async function actualizarEstadoPago(paymentId, status, comments = '') {
   if (!paymentId) throw new Error('La inscripción no tiene un pago asociado.');
   if (!['PAID', 'REJECTED'].includes(status)) throw new Error('Estado de pago no soportado.');
   return apiRequest(`/api/v1/payments/${paymentId}/review`, {
     method: 'POST',
-    body: JSON.stringify({
-      status,
-      comments: status === 'REJECTED'
-        ? 'Comprobante rechazado desde el panel administrativo.'
-        : 'Pago verificado desde el panel administrativo.',
-    }),
+    body: JSON.stringify({ status, comments }),
   });
+}
+
+export async function obtenerComprobante(paymentId) {
+  if (!paymentId) throw new Error('La inscripción no tiene un pago asociado.');
+  return apiBlob(`/api/v1/payments/${paymentId}/receipt/preview`);
 }
 
 export function exportarInscripcionesCSV(inscripciones) {
