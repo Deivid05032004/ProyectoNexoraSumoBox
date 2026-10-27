@@ -42,7 +42,7 @@ def _public_item(row):
 def list_public_regulations(event_id: int, response: Response,
                             category_id: int | None = Query(default=None, gt=0),
                             page: int = Query(1, ge=1, le=1_000_000),
-                            limit: int = Query(20, ge=1, le=100),
+                            limit: int = Query(5, ge=1, le=100),
                             db: Session = Depends(get_db)):
     if db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id AND IsActive=1"),
                   {"id": event_id}).first() is None:
@@ -136,7 +136,7 @@ def list_admin_regulations(event_id: int, response: Response,
                            category_id: int | None = Query(default=None, gt=0),
                            status: str | None = Query(default=None, pattern="^(DRAFT|PUBLISHED|ARCHIVED)$"),
                            page: int = Query(1, ge=1, le=1_000_000),
-                           limit: int = Query(50, ge=1, le=100),
+                           limit: int = Query(5, ge=1, le=100),
                            _user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
     if db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"), {"id": event_id}).first() is None:
         raise HTTPException(status_code=404, detail="Evento no encontrado.")
@@ -321,7 +321,7 @@ def archive_regulation(regulation_id: int, user=Depends(require_roles("ADMIN")),
 @router.get("/api/v1/admin/regulations/{regulation_id}/history")
 def regulation_history(regulation_id: int, response: Response,
                        page: int = Query(1, ge=1, le=1_000_000),
-                       limit: int = Query(50, ge=1, le=100),
+                       limit: int = Query(5, ge=1, le=100),
                        _user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
     if db.execute(text("SELECT 1 FROM dbo.EventRegulations WHERE RegulationId=:id"),
                   {"id": regulation_id}).first() is None:

@@ -59,6 +59,10 @@ MIGRATIONS = [
     ROOT / "database/scripts/30_unique_resource_names.sql",
     ROOT / "database/scripts/31_regulations_database_content.sql",
     ROOT / "database/scripts/32_finalize_regulations_database_content.sql",
+    ROOT / "database/scripts/33_event_management_forms.sql",
+    ROOT / "database/scripts/34_event_management_audit.sql",
+    ROOT / "database/scripts/35_schedule_official_2026_event.sql",
+    ROOT / "database/scripts/36_admin_password_change_required.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",
@@ -83,7 +87,8 @@ def _is_local_sql_server() -> bool:
     value = DB_SERVER.strip().lower()
     local_names = {".", "(local)", "localhost", "127.0.0.1"}
     machine = __import__("socket").gethostname().lower()
-    return value in local_names or value.split("\\", 1)[0] in local_names | {machine}
+    host = value.split(",", 1)[0].removeprefix("tcp:").strip()
+    return host in local_names or host.split("\\", 1)[0] in local_names | {machine}
 
 
 def _master_connection_string() -> str:

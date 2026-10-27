@@ -2,13 +2,14 @@ from pathlib import Path
 import os
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+from jose import JWTError, jwt
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.config import MAX_RECEIPT_BYTES, RECEIPT_STORAGE_DIR
+from app.core.config import ALGORITHM, ALLOWED_ORIGINS, MAX_RECEIPT_BYTES, RECEIPT_STORAGE_DIR, SECRET_KEY
 from app.core.crypto import (decrypt_bytes, decrypt_text, encrypt_bytes, encrypt_text,
                              payment_reference_lookup_hash)
 from app.core.pagination import apply_pagination_headers
@@ -16,6 +17,8 @@ from app.dependencies.auth import get_current_user, require_roles
 from app.schemas.payment import PaymentReview
 from app.services.registration_service import change_registration_status
 from app.services.registration_delivery import deliver_outbox
+from app.services.auth_service import find_active_user
+from app.services.payment_live import payment_update_connections
 from database import get_db
 
 router = APIRouter(prefix="/api/v1/payments", tags=["Pagos"])
@@ -26,6 +29,69 @@ _FORMATS = {
     ".jpeg": ("image/jpeg", lambda b: b.startswith(b"\xff\xd8\xff")),
     ".png": ("image/png", lambda b: b.startswith(b"\x89PNG\r\n\x1a\n") and len(b) >= 24 and b[12:16] == b"IHDR"),
 }
+
+
+def _payment_update_payload(db: Session, payment_id: int, event_type: str) -> dict:
+    row = db.execute(text("""
+        SELECT p.PaymentId AS payment_id,p.RegistrationId AS registration_id,
+          r.EventId AS event_id,p.PaymentStatus AS status,
+          CASE WHEN pr.ReceiptId IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS has_receipt,
+          pr.UploadedAt AS receipt_uploaded_at
+        FROM dbo.Payments p
+        JOIN dbo.Registrations r ON r.RegistrationId=p.RegistrationId
+        LEFT JOIN dbo.PaymentReceipts pr ON pr.PaymentId=p.PaymentId AND pr.IsCurrent=1
+        WHERE p.PaymentId=:id
+    """), {"id": payment_id}).mappings().one()
+    payload = dict(row)
+    uploaded_at = payload.get("receipt_uploaded_at")
+    if uploaded_at is not None:
+        payload["receipt_uploaded_at"] = uploaded_at.isoformat()
+    return {"type": event_type, **payload}
+
+
+@router.websocket("/ws/admin")
+async def admin_payment_updates(websocket: WebSocket, db: Session = Depends(get_db)):
+    """Live payment notifications; only active ADMIN JWTs may subscribe.
+
+    Browser WebSocket APIs cannot set Authorization headers, so the client sends
+    the short-lived JWT as a WebSocket subprotocol alongside the protocol name.
+    The token is never accepted back as the negotiated subprotocol.
+    """
+    origin = websocket.headers.get("origin")
+    if origin and origin not in ALLOWED_ORIGINS:
+        await websocket.close(code=4403)
+        return
+    protocols = websocket.scope.get("subprotocols", [])
+    token = next((value for value in protocols if value != "uta-payment-updates"), None)
+    try:
+        if not token:
+            raise ValueError("missing token")
+        claims = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = int(claims.get("sub", ""))
+        token_version = int(claims.get("ver", 0))
+        user = find_active_user(db, user_id)
+        if user is None or user["token_version"] != token_version:
+            raise ValueError("inactive token")
+        if user.get("must_change_password"):
+            await websocket.close(code=4403)
+            return
+        if user["role"] != "ADMIN":
+            await websocket.close(code=4403)
+            return
+    except (JWTError, TypeError, ValueError):
+        await websocket.close(code=4401)
+        return
+
+    try:
+        await payment_update_connections.connect(websocket)
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+    except (WebSocketDisconnect, RuntimeError):
+        return
+    finally:
+        await payment_update_connections.disconnect(websocket)
 
 
 def _payment(db: Session, payment_id: int):
@@ -63,7 +129,7 @@ def _authorize(payment, user):
 
 @router.get("")
 def list_payments(response: Response, status: str | None = None, page: int = Query(1, ge=1, le=1_000_000),
-                  limit: int = Query(50, ge=1, le=100),
+                  limit: int = Query(5, ge=1, le=100),
                   user=Depends(get_current_user), db: Session = Depends(get_db)):
     return _list_payments(response, status, page, limit, user, db)
 
@@ -72,7 +138,7 @@ def list_payments(response: Response, status: str | None = None, page: int = Que
 def my_payments(response: Response,
                 status: str | None = Query(default=None, pattern="^(PENDING|IN_REVIEW|PAID|REJECTED)$"),
                 page: int = Query(1, ge=1, le=1_000_000),
-                limit: int = Query(50, ge=1, le=100),
+                limit: int = Query(5, ge=1, le=100),
                 user=Depends(require_roles("PARTICIPANT")), db: Session = Depends(get_db)):
     """Return the authenticated participant's existing payment orders."""
     return _list_payments(response, status, page, limit, user, db)
@@ -229,6 +295,9 @@ async def submit_receipt(payment_id: int, file: UploadFile = File(...),
         staging.unlink(missing_ok=True)
         target.unlink(missing_ok=True)
         raise
+    await payment_update_connections.broadcast(
+        _payment_update_payload(db, payment_id, "payment.receipt_submitted")
+    )
     try:
         notification_status = deliver_outbox(db, outbox_id)
     except SQLAlchemyError:
@@ -349,6 +418,9 @@ def review_payment(payment_id: int, payload: PaymentReview,
         db.rollback()
         raise HTTPException(status_code=503, detail="No se pudo registrar la revisión del pago.")
     payment = _payment(db, payment_id)
+    payment_update_connections.broadcast_from_sync_route(
+        _payment_update_payload(db, payment_id, "payment.reviewed")
+    )
     try:
         payment["notification_status"] = deliver_outbox(db, outbox_id)
     except SQLAlchemyError:

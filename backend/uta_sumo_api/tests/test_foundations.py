@@ -68,6 +68,17 @@ def test_event_category_rules_reject_inconsistent_limits():
         EventCategoryRulesInput(min_participants=3, max_participants=2)
 
 
+def test_custom_numeric_answers_must_be_finite_and_nonnegative():
+    from fastapi import HTTPException
+    from routers.registrations import _validate_custom_number
+
+    _validate_custom_number(0, "Edad")
+    _validate_custom_number(15.5, "Edad")
+    for value in (-1, float("nan"), float("inf"), True, "5"):
+        with pytest.raises(HTTPException):
+            _validate_custom_number(value, "Edad")
+
+
 def test_password_hash_round_trip_and_not_plaintext():
     hashed = hash_password("correct horse battery staple")
     assert hashed != "correct horse battery staple"

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { apiRequest, getAdminUser } from './services/adminApi';
+import { adminWebSocketUrl, apiRequest, clearAdminSession, getAdminUser } from './services/adminApi';
 import { obtenerInscripciones, actualizarEstadoInscripcion, actualizarEstadoPago, obtenerComprobante, exportarInscripcionesCSV } from './services/adminInscripcionesApi';
 import ResultadosModal from './components/ResultadosModal';
 import AdminCreateForm from './AdminCreateForm';
 import RegistrationFormBuilder from './RegistrationFormBuilder';
+import EventManagement from './EventManagement';
+import AdminPasswordSettings from './AdminPasswordSettings';
 import NavIcon from '../components/NavIcon';
 import './AdminDashboard.css';
 
@@ -18,7 +20,17 @@ const FILTER_STATUS_CHOICES = [
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const [user] = useState(getAdminUser);
+  const [activeSection, setActiveSection] = useState(() => getAdminUser()?.must_change_password ? 'security' : 'registrations');
+  const eventoSeleccionadoRef = useRef(null);
   const [inscripciones, setInscripciones] = useState([]);
+  const [eventos, setEventos] = useState([]);
+  const [eventoSeleccionado, setEventoSeleccionado] = useState(null);
+  const [eventPage, setEventPage] = useState(1);
+  const [eventPageInfo, setEventPageInfo] = useState({ total: 0, total_pages: 0 });
+  const [registrationPage, setRegistrationPage] = useState(1);
+  const [registrationPageInfo, setRegistrationPageInfo] = useState({ total: 0, total_pages: 0 });
+  const [categoryPage, setCategoryPage] = useState(1);
+  const [categoryPageInfo, setCategoryPageInfo] = useState({ total: 0, total_pages: 0 });
   const [categorias, setCategorias] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState('');
@@ -29,40 +41,152 @@ export default function AdminDashboard() {
   const [modalResultadosAbierto, setModalResultadosAbierto] = useState(false);
   const [crearAdmin, setCrearAdmin] = useState(false);
   const [crearFormulario, setCrearFormulario] = useState(false);
+  const [gestionarEventos, setGestionarEventos] = useState(false);
   const [actualizando, setActualizando] = useState(null);
   const [combateActual, setCombateActual] = useState(null);
   const [comprobante, setComprobante] = useState(null);
   const [cargandoComprobante, setCargandoComprobante] = useState(false);
   const [errorComprobante, setErrorComprobante] = useState('');
   const [motivoRechazo, setMotivoRechazo] = useState('');
+  const [pagosEnVivo, setPagosEnVivo] = useState('connecting');
+
+  const cargarEventos = useCallback(async () => {
+    if (user?.must_change_password) return;
+    try {
+      const data = await apiRequest(`/api/v1/admin/events?active_only=true&page=${eventPage}&limit=5`);
+      const items = data.items || [];
+      setEventos(items);
+      setEventPageInfo(data);
+      if (!eventoSeleccionadoRef.current && items.length) {
+        const initial = items.find((item) => ['LIVE', 'SCHEDULED'].includes(item.status)) || items[0];
+        eventoSeleccionadoRef.current = initial;
+        setEventoSeleccionado(initial);
+      } else if (eventoSeleccionadoRef.current) {
+        const refreshed = items.find((item) => Number(item.id) === Number(eventoSeleccionadoRef.current.id));
+        if (refreshed) {
+          eventoSeleccionadoRef.current = refreshed;
+          setEventoSeleccionado(refreshed);
+        }
+      }
+    } catch (err) {
+      setError(err.message || 'No se pudieron cargar los eventos.');
+      setCargando(false);
+    }
+  }, [eventPage, user]);
 
   useEffect(() => {
     const url = comprobante?.url;
     return () => { if (url) URL.revokeObjectURL(url); };
   }, [comprobante?.url]);
 
-  const cargar = useCallback(async () => {
-    setCargando(true);
-    setError('');
+  const cargar = useCallback(async ({ silencioso = false } = {}) => {
+    if (user?.must_change_password) return;
+    if (!silencioso) setCargando(true);
+    if (!silencioso) setError('');
+    if (!eventoSeleccionado) {
+      setInscripciones([]);
+      setCategorias([]);
+      setRegistrationPageInfo({ total: 0, total_pages: 0 });
+      if (!silencioso) setCargando(false);
+      return;
+    }
     try {
       const [rows, cats] = await Promise.all([
-        obtenerInscripciones({ categoria: filtroCategoria, estado: filtroEstado }),
-        apiRequest('/api/v1/categories?page=1&limit=100'),
+        obtenerInscripciones({ eventId: eventoSeleccionado.id, categoria: filtroCategoria, estado: filtroEstado, page: registrationPage }),
+        apiRequest(`/api/v1/admin/events/${eventoSeleccionado.id}/categories?page=${categoryPage}&limit=5`),
       ]);
-      setInscripciones(rows);
-      setCategorias(cats);
+      setInscripciones(rows.items || []);
+      setRegistrationPageInfo(rows);
+      setCategorias(cats.items || []);
+      setCategoryPageInfo(cats);
     } catch (err) {
-      setError(err.message || 'Error al consultar las inscripciones.');
-    } finally { setCargando(false); }
-  }, [filtroCategoria, filtroEstado]);
+      if (!silencioso) setError(err.message || 'Error al consultar las inscripciones.');
+    } finally { if (!silencioso) setCargando(false); }
+  }, [eventoSeleccionado, filtroCategoria, filtroEstado, registrationPage, categoryPage, user]);
+
+  const cargarRef = useRef(cargar);
+  useEffect(() => { cargarRef.current = cargar; }, [cargar]);
 
   useEffect(() => {
     if (!user || !['ADMIN', 'EVENT_MANAGER'].includes(user.role)) {
       navigate('/admin', { replace: true });
-      return;
     }
-    cargar();
-  }, [user, navigate, cargar]);
+  }, [user, navigate]);
+
+  useEffect(() => {
+    if (user?.role !== 'ADMIN' || user?.must_change_password) return undefined;
+    const timer = window.setTimeout(() => cargarEventos(), 0);
+    return () => window.clearTimeout(timer);
+  }, [user, cargarEventos]);
+
+  useEffect(() => {
+    if (!eventoSeleccionado) return undefined;
+    const timer = window.setTimeout(() => cargar(), 0);
+    return () => window.clearTimeout(timer);
+  }, [eventoSeleccionado, registrationPage, categoryPage, filtroCategoria, filtroEstado, cargar]);
+
+  useEffect(() => {
+    if (user?.role !== 'ADMIN' || user?.must_change_password) return undefined;
+    let detenido = false;
+    let socket;
+    let temporizadorReconexion;
+    let demoraReconexion = 1000;
+    const token = sessionStorage.getItem('uta.access_token');
+
+    function conectar() {
+      if (detenido || !token) return;
+      setPagosEnVivo('connecting');
+      try {
+        socket = new WebSocket(adminWebSocketUrl('/api/v1/payments/ws/admin'), [
+          'uta-payment-updates', token,
+        ]);
+      } catch {
+        setPagosEnVivo('offline');
+        temporizadorReconexion = window.setTimeout(conectar, demoraReconexion);
+        demoraReconexion = Math.min(demoraReconexion * 2, 30000);
+        return;
+      }
+      socket.onopen = () => {
+        demoraReconexion = 1000;
+        setPagosEnVivo('online');
+        // Reload immediately after subscription to close the REST/WS race window.
+        void cargarRef.current({ silencioso: true });
+      };
+      socket.onmessage = ({ data }) => {
+        let update;
+        try { update = JSON.parse(data); } catch { return; }
+        if (!['payment.receipt_submitted', 'payment.reviewed',
+          'registration.created', 'registration.updated'].includes(update.type)) return;
+        void cargarRef.current({ silencioso: true });
+        if (['payment.receipt_submitted', 'registration.created'].includes(update.type)) {
+          setToast(update.type === 'registration.created'
+            ? 'Se registró un equipo nuevo. La lista de inscripciones se actualizó.'
+            : 'Llegó un comprobante nuevo. La lista de inscripciones se actualizó.');
+          window.setTimeout(() => setToast(''), 4500);
+        }
+      };
+      socket.onclose = () => {
+        if (detenido) return;
+        setPagosEnVivo('offline');
+        temporizadorReconexion = window.setTimeout(conectar, demoraReconexion);
+        demoraReconexion = Math.min(demoraReconexion * 2, 30000);
+      };
+      socket.onerror = () => socket?.close();
+    }
+
+    conectar();
+    // SQL changes made outside this API do not emit WebSocket events; periodic
+    // reconciliation keeps the dashboard current even for those changes.
+    const respaldo = window.setInterval(() => {
+      void cargarRef.current({ silencioso: true });
+    }, 30000);
+    return () => {
+      detenido = true;
+      window.clearInterval(respaldo);
+      window.clearTimeout(temporizadorReconexion);
+      socket?.close();
+    };
+  }, [user]);
 
   useEffect(() => {
     let mounted = true;
@@ -160,8 +284,7 @@ export default function AdminDashboard() {
   }
 
   function cerrarSesion() {
-    ['uta.access_token', 'uta.user', 'uta.revisor'].forEach((key) => sessionStorage.removeItem(key));
-    window.dispatchEvent(new Event('uta-session-changed'));
+    clearAdminSession();
     navigate('/admin', { replace: true });
   }
 
@@ -174,6 +297,10 @@ export default function AdminDashboard() {
             <strong>Gestión del evento</strong>
           </div>
           <nav className="admin-sidebar-nav">
+            {user?.role === 'ADMIN' && <button type="button" className={`admin-sidebar-link${activeSection === 'security' ? ' is-active' : ''}`} aria-current={activeSection === 'security' ? 'page' : undefined} onClick={() => setActiveSection('security')}>
+              <span className="admin-sidebar-icon"><NavIcon name="security" /></span> Seguridad de la cuenta
+            </button>}
+            {!user?.must_change_password && <>
             <button type="button" className="admin-sidebar-link is-active" aria-current="page">
               <span className="admin-sidebar-icon"><NavIcon name="registration" /></span> Inscripciones
             </button>
@@ -183,39 +310,77 @@ export default function AdminDashboard() {
             {user?.role === 'ADMIN' && <button type="button" className="admin-sidebar-link" onClick={() => setCrearFormulario(true)}>
               <span className="admin-sidebar-icon"><NavIcon name="form" /></span> Formularios
             </button>}
-            <button type="button" className="admin-sidebar-link" onClick={() => setCrearAdmin(true)}>
+            {user?.role === 'ADMIN' && <button type="button" className="admin-sidebar-link" onClick={() => setGestionarEventos(true)}>
+              <span className="admin-sidebar-icon"><NavIcon name="competition" /></span> Eventos
+            </button>}
+            {user?.role === 'ADMIN' && <button type="button" className="admin-sidebar-link" onClick={() => setCrearAdmin(true)}>
               <span className="admin-sidebar-icon"><NavIcon name="staff" /></span> Personal autorizado
-            </button>
+            </button>}
+            </>}
           </nav>
           <div className="admin-sidebar-footer">
             <span className="admin-sidebar-user" title={user?.email}>{user?.email}</span>
             <button type="button" className="admin-sidebar-logout" onClick={cerrarSesion}><NavIcon name="logout" />Cerrar sesión</button>
           </div>
         </aside>
-        <div className="admin-dashboard-container">
+        {activeSection === 'security' ? <div className="admin-dashboard-container">
+          <header className="admin-dashboard-header">
+            <h1 className="admin-page-title">Seguridad de la cuenta</h1>
+            <span className="admin-session-text">{user?.email}</span>
+          </header>
+          <AdminPasswordSettings required={Boolean(user?.must_change_password)} />
+        </div> : <div className="admin-dashboard-container">
         <header className="admin-dashboard-header">
           <h1 className="admin-page-title">Inscripciones</h1>
           <div className="admin-header-actions">
             <span className="admin-session-text">{user?.role === 'ADMIN' ? 'Administrador' : 'Gestor de evento'}</span>
-            <button type="button" className="btn-admin-header" onClick={() => exportarInscripcionesCSV(visibles)}>Exportar CSV</button>
+            {user?.role === 'ADMIN' && <span className={`admin-live-indicator ${pagosEnVivo === 'online' ? 'is-online' : ''}`} role="status">
+              <span aria-hidden="true" />{pagosEnVivo === 'online' ? 'Inscripciones y pagos en vivo' : 'Reconectando actualizaciones…'}
+            </span>}
+            <button type="button" className="btn-admin-header" onClick={() => exportarInscripcionesCSV(visibles)}>Exportar página CSV</button>
           </div>
         </header>
 
+        <section className="admin-event-selector" aria-label="Evento administrado">
+          <div><span className="admin-event-kicker">CONTEXTO DE ADMINISTRACIÓN</span><label htmlFor="admin-event-select">Evento</label>
+            <select id="admin-event-select" value={eventoSeleccionado?.id || ''} onChange={(event) => {
+              const next = eventos.find((item) => String(item.id) === event.target.value);
+              if (next) { eventoSeleccionadoRef.current = next; setEventoSeleccionado(next); setRegistrationPage(1); setCategoryPage(1); setFiltroCategoria(''); }
+            }} disabled={!eventos.length}>
+              {!eventos.length && <option value="">No hay eventos disponibles</option>}
+              {eventoSeleccionado && !eventos.some((item) => Number(item.id) === Number(eventoSeleccionado.id))
+                && <option value={eventoSeleccionado.id}>{eventoSeleccionado.name} · {eventoSeleccionado.edition_year}</option>}
+              {eventos.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.edition_year} · {({ DRAFT: 'Borrador', SCHEDULED: 'Programado', LIVE: 'En curso', PAUSED: 'Pausado', FINISHED: 'Finalizado', CANCELLED: 'Cancelado' })[item.status] || item.status}</option>)}
+            </select>
+            <strong>{eventoSeleccionado ? `${eventoSeleccionado.name} · ${eventoSeleccionado.edition_year} · ${({ DRAFT: 'Borrador', SCHEDULED: 'Programado', LIVE: 'En curso', PAUSED: 'Pausado', FINISHED: 'Finalizado', CANCELLED: 'Cancelado' })[eventoSeleccionado.status] || eventoSeleccionado.status}` : 'Selecciona un evento para gestionar sus inscripciones y pagos'}</strong>
+          </div>
+          <div className="admin-pagination admin-event-pagination">
+            <button type="button" disabled={eventPage <= 1} onClick={() => setEventPage((page) => Math.max(1, page - 1))}>Anterior</button>
+            <span>Eventos activos · página {eventPage} de {Math.max(1, eventPageInfo.total_pages || 1)} · {eventPageInfo.total || 0} total</span>
+            <button type="button" disabled={eventPage >= (eventPageInfo.total_pages || 1)} onClick={() => setEventPage((page) => page + 1)}>Siguiente</button>
+          </div>
+        </section>
+
         <section className="admin-summary-cards" aria-label="Resumen de inscripciones">
-          <article className="summary-card"><div className="summary-number">{metricas.total}</div><div className="summary-label">Inscripciones visibles</div></article>
-          <article className="summary-card"><div className="summary-number">{metricas.pendientes}</div><div className="summary-label">Pendientes</div></article>
-          <article className="summary-card"><div className="summary-number">{metricas.aprobadas}</div><div className="summary-label">Aprobadas</div></article>
+          <article className="summary-card"><div className="summary-number">{registrationPageInfo.total || 0}</div><div className="summary-label">Inscripciones del evento</div></article>
+          <article className="summary-card"><div className="summary-number">{metricas.pendientes}</div><div className="summary-label">Pendientes en esta página</div></article>
+          <article className="summary-card"><div className="summary-number">{metricas.aprobadas}</div><div className="summary-label">Aprobadas en esta página</div></article>
         </section>
 
         <section className="admin-filters-bar" aria-label="Filtros de búsqueda">
-          <div className="filter-group filter-group-search"><label htmlFor="filter-institucion" className="filter-label">Buscar inscripción</label>
+          <div className="filter-group filter-group-search"><label htmlFor="filter-institucion" className="filter-label">Buscar en esta página</label>
             <input id="filter-institucion" className="filter-input" value={busquedaInstitucion} onChange={(e) => setBusquedaInstitucion(e.target.value)} placeholder="Equipo, robot o institución" /></div>
           <div className="filter-group filter-group-select"><label htmlFor="filter-categoria" className="filter-label">Categoría</label>
-            <select id="filter-categoria" className="filter-select" value={filtroCategoria} onChange={(e) => setFiltroCategoria(e.target.value)}>
+            <select id="filter-categoria" className="filter-select" value={filtroCategoria} onChange={(e) => { setFiltroCategoria(e.target.value); setRegistrationPage(1); }}>
               <option value="">Todas</option>{categorias.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
             </select></div>
+          {categoryPageInfo.total_pages > 1 && <div className="admin-pagination admin-category-pagination">
+            <button type="button" disabled={categoryPage <= 1} onClick={() => { setFiltroCategoria(''); setRegistrationPage(1); setCategoryPage((page) => Math.max(1, page - 1)); }}>‹</button>
+            <span>Categorías {categoryPage} / {categoryPageInfo.total_pages}</span>
+            <button type="button" disabled={categoryPage >= categoryPageInfo.total_pages} onClick={() => { setFiltroCategoria(''); setRegistrationPage(1); setCategoryPage((page) => page + 1); }}>›</button>
+          </div>}
           <div className="filter-group filter-group-select"><label htmlFor="filter-estado" className="filter-label">Estado</label>
-            <select id="filter-estado" className="filter-select" value={filtroEstado} onChange={(e) => setFiltroEstado(e.target.value)}>
+            <select id="filter-estado" className="filter-select" value={filtroEstado} onChange={(e) => { setFiltroEstado(e.target.value); setRegistrationPage(1); }}>
               <option value="">Todos</option>{FILTER_STATUS_CHOICES.map(([code, label]) => <option key={code} value={label}>{label}</option>)}
             </select></div>
         </section>
@@ -246,11 +411,18 @@ export default function AdminDashboard() {
                     </tr>;
                   })}</tbody></table>}
         </section>
-      </div>
+        <div className="admin-pagination admin-registration-pagination">
+          <span>Mostrando {visibles.length ? ((registrationPage - 1) * 5 + 1) : 0}–{Math.min((registrationPage - 1) * 5 + visibles.length, registrationPageInfo.total || 0)} de {registrationPageInfo.total || 0} inscripciones</span>
+          <div><button type="button" disabled={registrationPage <= 1 || cargando} onClick={() => setRegistrationPage((page) => Math.max(1, page - 1))}>Anterior</button>
+            <strong>Página {registrationPage} de {Math.max(1, registrationPageInfo.total_pages || 1)}</strong>
+            <button type="button" disabled={registrationPage >= (registrationPageInfo.total_pages || 1) || cargando} onClick={() => setRegistrationPage((page) => page + 1)}>Siguiente</button></div>
+        </div>
+      </div>}
       </div>
       <ResultadosModal isOpen={modalResultadosAbierto} onClose={() => setModalResultadosAbierto(false)} />
       {crearAdmin && <AdminCreateForm onClose={() => setCrearAdmin(false)} />}
       {crearFormulario && <RegistrationFormBuilder onClose={() => setCrearFormulario(false)} />}
+      {gestionarEventos && <EventManagement onClose={() => setGestionarEventos(false)} />}
       {comprobante && <div className="receipt-modal-backdrop" role="presentation"
         onMouseDown={(event) => { if (event.target === event.currentTarget) setComprobante(null); }}>
         <section className="receipt-review-modal" role="dialog" aria-modal="true" aria-labelledby="receipt-review-title">

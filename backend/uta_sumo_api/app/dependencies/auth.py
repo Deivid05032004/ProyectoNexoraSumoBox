@@ -10,7 +10,7 @@ from app.services.auth_service import find_active_user
 bearer = HTTPBearer(auto_error=False)
 
 
-def get_current_user(
+def get_authenticated_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
 ):
@@ -33,9 +33,17 @@ def get_current_user(
     return dict(user)
 
 
+def get_current_user(user=Depends(get_authenticated_user)):
+    if user.get("must_change_password"):
+        raise HTTPException(status_code=403, detail="Actualiza tu contraseña antes de continuar.")
+    return user
+
+
 def require_roles(*roles: str):
     def dependency(user=Depends(get_current_user)):
         if user["role"] not in roles:
             raise HTTPException(status_code=403, detail="No tiene permisos para esta operación.")
+        if user.get("must_change_password"):
+            raise HTTPException(status_code=403, detail="Actualiza tu contraseña antes de continuar.")
         return user
     return dependency

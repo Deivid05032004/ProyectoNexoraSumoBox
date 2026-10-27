@@ -16,7 +16,7 @@ router = APIRouter(
 
 @router.get("")
 def listar_categorias(response: Response, page: int = Query(1, ge=1, le=1_000_000),
-                     limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db)):
+                     limit: int = Query(5, ge=1, le=100), db: Session = Depends(get_db)):
     query = text("""
         SELECT
             CategoryId AS id,

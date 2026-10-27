@@ -12,7 +12,9 @@ API REST con FastAPI, SQLAlchemy y SQL Server. Swagger UI: `/docs`; OpenAPI:
 4. Define `SECRET_KEY` aleatoria de al menos 32 caracteres y `PII_ENCRYPTION_KEY` como base64url de 32 bytes aleatorios. No cambies ni pierdas estas claves después de cifrar datos. La instancia local usa Windows Auth, `.`\`SQLEXPRESS`, base
    `UTA_SUMO_ROBOTICS_CUP` y ODBC Driver 18.
 5. Ejecuta las migraciones aditivas: `.venv\Scripts\python.exe scripts\migrate.py`.
-   Conservan los datos y crean cuentas demo locales para cada rol.
+   Conservan los datos y, con `AUTO_BOOTSTRAP_DEMO_ACCOUNTS=true`, crean
+   cuentas demo locales para cada rol y la cuenta ADMIN local
+   `adminTics@uta.edu.ec`.
 6. Inicia desde este directorio:
    `.venv\Scripts\python.exe -m uvicorn main:app --reload`
 7. Abre `http://127.0.0.1:8000/docs`.
@@ -39,7 +41,9 @@ para configuración, flujos, rutas, roles, modelo de datos y pasos de despliegue
 Para crear una cuenta privilegiada de forma interactiva, ejecuta desde este
 directorio `.venv\Scripts\python.exe scripts\provision_operator_user.py`.
 El script solicita rol y contraseña oculta, no muestra ni guarda la contraseña
-en texto plano y no crea usuarios predeterminados.
+en texto plano y no crea usuarios predeterminados. La única cuenta de acceso
+predeterminada se crea por el aprovisionador local de demostración descrito
+abajo; no debe habilitarse en servidores compartidos o productivos.
 
 ## Operación
 
@@ -59,7 +63,8 @@ agrega automáticamente la cuenta responsable al roster. El formulario envía
 `robot_id` y un arreglo `participants`. Los límites de participantes y coaches
 se configuran en `EventCategories`, por evento y categoría; la API no codifica
 la política por nombre. Para UTA SUMO ROBOTICS CUP 2026, Mini Sumo Amateur RC
-requiere exactamente dos integrantes `role: "PARTICIPANT"` y ningún coach.
+requiere exactamente dos integrantes `role: "PARTICIPANT"` y un coach; la
+migración posterior 25 prevalece sobre la regla anterior de la migración 23.
 Otros eventos pueden definir límites diferentes, hasta 30 posiciones.
 Cada integrante puede enviar un `participant_id` ya vinculado
 explícitamente a la misma cuenta, o sus datos `first_name`, `last_name`,
@@ -117,6 +122,19 @@ del rechazo, reutilice `POST /api/v1/payments/{payment_id}/receipt`; el pago
 pasa a `IN_REVIEW`, sin marcarse como `PAID`. El administrador registra la
 decisión en `POST /api/v1/payments/{payment_id}/review`. Los estados y la
 habilitación de carga se recalculan al consultar nuevamente.
+
+El panel ADMIN también puede suscribirse a
+`ws://127.0.0.1:8000/api/v1/payments/ws/admin` (en HTTPS, `wss://`). La conexión
+requiere un JWT activo de rol `ADMIN`, enviado como segundo subprotocolo junto a
+`uta-payment-updates`; el servidor negocia únicamente el nombre del protocolo.
+Al crear una inscripción de equipo, cambiar su estado, cargar un comprobante o
+revisar un pago se transmite un evento mínimo con IDs y estados, además de la
+hora del comprobante cuando aplica; nunca se envía el archivo ni datos personales. El
+frontend vuelve a consultar las inscripciones al conectarse y al recibir un
+evento, reconecta si pierde el socket y reconcilia cada 30 segundos por si un
+cambio se realizó fuera de la API. El broadcast actual es local al proceso; si
+se despliega con varios workers, se requiere un broker compartido para repartir
+eventos entre procesos.
 
 La migración 10 reasigna las cuentas antiguas `REVIEWER` a `EVENT_MANAGER` y
 `TREASURY` a `ADMIN`; la migración 12 actualiza referencias de auditoría y
@@ -213,19 +231,45 @@ el destino antes de usarlo. La creación inicial de la base es el único
 paso que SQL Server ejecuta fuera de una transacción explícita; las migraciones
 de esquema y semillas se aplican dentro de transacciones.
 
-Para levantar datos sintéticos locales y cuatro identidades de prueba:
+Para aprovisionar cuatro identidades locales de prueba (el evento, categoría y
+tarifa siempre se toman de las migraciones; no se crea un evento demo):
 
 ```powershell
 .venv\Scripts\python.exe scripts\bootstrap_local_demo_accounts.py --run-postman
 ```
+
+El mismo bootstrap local crea, solo si aún no existe, la cuenta ADMIN
+`adminTics@uta.edu.ec` con contraseña inicial `Admin@utaTics`. La cuenta se
+conserva en ejecuciones posteriores y el script no restablece su contraseña.
+Es una credencial fija de desarrollo, corta respecto de la política general
+de 15 caracteres y solo se crea cuando el servidor SQL es local y la base
+es `UTA_SUMO_ROBOTICS_CUP`. No uses esa clave en un servidor compartido o
+productivo. Después del primer acceso, cámbiala desde
+`POST /api/v1/auth/change-password` por una frase de 15 caracteres o más.
+La migración local ejecuta este aprovisionamiento al finalizar cuando
+`AUTO_BOOTSTRAP_DEMO_ACCOUNTS=true`.
+
+El primer inicio de sesión de esta cuenta devuelve `must_change_password: true`
+y el panel abre directamente la pestaña **Seguridad de la cuenta**. Hasta
+guardar una clave nueva, la API bloquea los endpoints administrativos. La
+contraseña nueva se comprueba con la política general (15 caracteres como
+mínimo, no común ni predecible); el cambio queda auditado, limpia la marca
+obligatoria e invalida las sesiones activas. Luego se inicia sesión con la
+nueva clave. La pestaña también está disponible para que cualquier ADMIN
+cambie su contraseña cuando lo necesite. Si olvidas la contraseña actual, este
+flujo no es recuperación por correo: un operador debe restablecerla por un
+proceso administrativo seguro.
 
 La opción `--run-postman` utiliza Newman con la colección
 `postman/UTA_Sumo_E2E.postman_collection.json`; el archivo temporal de variables
 con contraseñas se elimina al terminar. Si las cuentas ya existen, no se pueden recuperar sus claves: usa `--rotate-existing --run-postman` para rotarlas y ejecutar Newman. Las claves aleatorias solo se muestran al crearlas
 y nunca se guardan en SQL o en los scripts. No hay cuentas
 privilegiadas con contraseñas por defecto compartidas.
+El flujo de prueba queda asociado al evento oficial `UTA SUMO ROBOTICS CUP 2026`.
 
 Las migraciones 06 a 20 se aplicaron en la instancia local. Se preservaron las cuentas y se cifraron sus datos personales; las filas históricas sin propietario no se exponen a participantes. Las migraciones son aditivas y no eliminan datos operativos. SQL Server Express no ofrece TDE, por lo que el cifrado de aplicación no cifra páginas, log ni backups completos. Protege el volumen y los backups con cifrado del sistema/almacenamiento o usa una edición con TDE.
+
+La migración `36_admin_password_change_required.sql` agrega la marca de cambio obligatorio sin borrar datos; `scripts/migrate.py` la aplica en el flujo habitual.
 
 ## Pruebas
 
@@ -406,3 +450,35 @@ archivos de instalaciones antiguas; las nuevas cargas se guardan en SQL Server.
 El endpoint público que debe consumir el frontend es
 `GET /api/v1/events/1/regulations?category_id=1`; `download_url` contiene la
 ruta pública del PDF. Para administrar documentos se requiere rol `ADMIN`.
+
+## Administración de eventos y formularios configurables
+
+Las migraciones 33–34 añaden descripción, lugar y fechas del evento, historial
+de estado, auditoría de metadatos, versiones de formulario y respuestas asociadas a la versión usada por
+cada inscripción. Aplicar con el ejecutor habitual; no requiere borrar la base.
+El panel ADMIN incluye Eventos para crear/editar datos, asociar categorías y
+cupos, configurar preguntas y transicionar el estado. Editar un formulario
+crea una versión; las inscripciones guardan la versión y las respuestas
+cifradas para conservar el historial.
+
+- `GET /api/v1/admin/events?page=1&limit=50&search=...&status=...` lista y filtra.
+- `POST /api/v1/admin/events`, `GET /api/v1/admin/events/{id}` y
+  `PUT /api/v1/admin/events/{id}` crean, consultan y editan metadatos.
+- `POST /api/v1/admin/events/{id}/categories` crea una categoría con nombre y
+  descripción propios y la asocia al evento en la misma transacción. Desde el
+  panel se pueden configurar luego cupos y tarifa para esa categoría.
+- `PATCH /api/v1/admin/events/{id}/status` aplica transiciones controladas
+  `DRAFT → SCHEDULED → LIVE ↔ PAUSED → FINISHED`; cancelar se permite durante
+  preparación o ejecución. Eventos terminales no se reabren.
+- `GET /api/v1/events/{id}/form` entrega campos vigentes al participante;
+  `PUT /api/v1/admin/events/{id}/form` crea nueva versión; el historial se
+  consulta en `/api/v1/admin/events/{id}/form/history`.
+- `POST /api/v1/registrations` acepta `custom_answers` keyed por identificador
+  de campo; valida requeridos, tipo y opciones, guarda respuestas cifradas y
+  referencia la versión. El detalle autorizado entrega respuestas y versión.
+- `POST /api/v1/admin/users` permite a ADMIN crear ADMIN/EVENT_MANAGER con
+  validación de correo, contraseña, unicidad y auditoría. La contraseña no se
+  devuelve; debe entregarse por canal seguro.
+- `GET /api/v1/admin/events/{id}/audit` devuelve cambios de metadatos paginados.
+- El panel Eventos también lista, carga y publica reglamentos PDF con los
+  endpoints descritos en la sección anterior.

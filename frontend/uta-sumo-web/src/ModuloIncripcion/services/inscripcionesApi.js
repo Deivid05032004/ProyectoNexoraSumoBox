@@ -53,8 +53,14 @@ export async function cargarConfiguracionEvento(eventId) {
   return mensajeRespuesta(response)
 }
 
-export async function cargarCategoriasEvento(eventId) {
-  const response = await fetch(`${API_BASE}/api/v1/events/${eventId}/categories`)
+export async function cargarCategoriasEvento(eventId, categoryId = null) {
+  const query = categoryId ? `?category_id=${encodeURIComponent(categoryId)}&limit=5` : '?page=1&limit=5'
+  const response = await fetch(`${API_BASE}/api/v1/events/${eventId}/categories${query}`)
+  return mensajeRespuesta(response)
+}
+
+export async function cargarFormularioEvento(eventId) {
+  const response = await fetch(`${API_BASE}/api/v1/events/${eventId}/form`)
   return mensajeRespuesta(response)
 }
 
@@ -78,6 +84,7 @@ export async function crearInscripcion({
   teamName,
   robotName,
   participants,
+  customAnswers = {},
 }) {
   const resources = await solicitud('/api/v1/registration-resources', token, {
     method: 'POST',
@@ -103,6 +110,7 @@ export async function crearInscripcion({
         institution_id: Number(item.institution_id),
         mobile_phone: item.mobile_phone.trim(),
       })),
+      custom_answers: customAnswers,
       notes: null,
     }),
   })

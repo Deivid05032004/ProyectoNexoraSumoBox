@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../services/adminApi';
-import { obtenerInscripciones } from '../services/adminInscripcionesApi';
+import { obtenerTodasLasInscripciones } from '../services/adminInscripcionesApi';
 import { CRONOMETRO_INICIAL } from '../../ModuloResultados/services/resultadosApi';
 import './ResultadosModal.css';
 
@@ -55,7 +55,7 @@ export default function ResultadosModal({ isOpen, onClose }) {
     setError('');
     try {
       const [registrations, current] = await Promise.all([
-        obtenerInscripciones(),
+        obtenerTodasLasInscripciones(),
         apiRequest('/api/v1/competition/combate-actual'),
       ]);
       const approved = registrations

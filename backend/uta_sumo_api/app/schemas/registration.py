@@ -1,3 +1,4 @@
+from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -49,6 +50,7 @@ class RegistrationCreate(BaseModel):
     team_id: int = Field(gt=0)
     robot_id: int = Field(gt=0)
     participants: list[RegistrationParticipant] = Field(min_length=1, max_length=30)
+    custom_answers: dict[str, Any] = Field(default_factory=dict, max_length=50)
     notes: str | None = Field(default=None, max_length=1000)
 
     @model_validator(mode="after")
@@ -57,6 +59,12 @@ class RegistrationCreate(BaseModel):
         # en SQL; aquí se validan solo invariantes independientes del evento.
         if not any(person.role == "PARTICIPANT" for person in self.participants):
             raise ValueError("La inscripción requiere al menos un integrante PARTICIPANT.")
+        # Stop unreasonable payloads before querying category-specific limits;
+        # the exact min/max remains configurable per event in SQL.
+        if sum(person.role == "PARTICIPANT" for person in self.participants) > 30:
+            raise ValueError("Una inscripción no puede superar 30 participantes.")
+        if sum(person.role == "COACH" for person in self.participants) > 30:
+            raise ValueError("Una inscripción no puede superar 30 coaches.")
         inline_people = [
             (p.first_name.casefold(), p.last_name.casefold(), p.institution_id,
              (p.mobile_phone or "").casefold())

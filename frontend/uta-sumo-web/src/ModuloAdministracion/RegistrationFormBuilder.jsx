@@ -37,6 +37,20 @@ export default function RegistrationFormBuilder({ onClose }) {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    if (!eventId) return undefined;
+    let active = true;
+    apiRequest(`/api/v1/events/${eventId}/form`)
+      .then((saved) => {
+        if (!active || !saved?.version) return;
+        setTitle(saved.title || 'Formulario de inscripción');
+        setDescription(saved.description || '');
+        setFields(saved.fields?.length ? saved.fields : [newField()]);
+      })
+      .catch((err) => { if (active) setError(err.message || 'No se pudo cargar la versión vigente.'); });
+    return () => { active = false; };
+  }, [eventId]);
+
   function updateField(fieldId, changes) {
     setFields((current) => current.map((field) => field.id === fieldId ? { ...field, ...changes } : field));
   }
@@ -68,10 +82,6 @@ export default function RegistrationFormBuilder({ onClose }) {
       receipt_message: null,
       currency: 'USD',
       is_enabled: true,
-      custom_fields: fields.map(({ id, label, type, required, options }) => ({
-        id, label: label.trim(), type, required,
-        options: CHOICE_TYPES.has(type) ? options.map((option) => option.trim()).filter(Boolean) : [],
-      })),
     };
 
     setSaving(true);
@@ -79,7 +89,17 @@ export default function RegistrationFormBuilder({ onClose }) {
       const result = await apiRequest(`/api/v1/admin/events/${eventId}/registration-config`, {
         method: 'PUT', body: JSON.stringify(payload),
       });
-      setNotice(`Configuración básica guardada para ${selectedEvent?.name || 'la competencia'}. El backend no confirmó los campos personalizados.`);
+      const customForm = {
+        title: title.trim(), description: description.trim() || null,
+        fields: fields.map(({ id, label, type, required, options }) => ({
+          id, label: label.trim(), type, required,
+          options: CHOICE_TYPES.has(type) ? options.map((option) => option.trim()).filter(Boolean) : [],
+        })),
+      };
+      await apiRequest(`/api/v1/admin/events/${eventId}/form`, {
+        method: 'PUT', body: JSON.stringify(customForm),
+      });
+      setNotice(`Configuración y versión del formulario guardadas para ${selectedEvent?.name || 'el evento'}.`);
       setTitle(result.form_title || title);
     } catch (err) {
       const detail = String(err.message || 'Error desconocido.');

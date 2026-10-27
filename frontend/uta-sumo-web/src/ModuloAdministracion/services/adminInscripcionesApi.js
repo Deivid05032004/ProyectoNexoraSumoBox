@@ -40,23 +40,17 @@ function mapRegistration(row, detail = {}) {
   };
 }
 
-export async function obtenerInscripciones({ categoria, estado } = {}) {
-  const params = new URLSearchParams({ page: '1', limit: '100' });
-  // The API accepts `status`, but has no institution or category filter.
-  // Category remains a client-side filter; status is mapped to backend codes.
+export async function obtenerInscripciones({ eventId, categoria, estado, page = 1 } = {}) {
+  const params = new URLSearchParams({ page: String(page), limit: '5' });
+  if (eventId) params.set('event_id', String(eventId));
+  if (categoria) params.set('category_id', String(categoria));
   const statusCodes = {
     'Pago pendiente': 'PAYMENT_PENDING', 'Pago en revisión': 'PAYMENT_REVIEW',
     Pendiente: 'PENDING', Aprobado: 'APPROVED', Observado: 'OBSERVED', Rechazado: 'REJECTED',
   };
   if (estado && statusCodes[estado]) params.set('status', statusCodes[estado]);
-  let result = await apiRequest(`/api/v1/admin/registrations?${params}`);
-  const rows = [...(result.items || [])];
-  for (let page = 2; page <= (result.total_pages || 1); page += 1) {
-    params.set('page', String(page));
-    result = await apiRequest(`/api/v1/admin/registrations?${params}`);
-    rows.push(...(result.items || []));
-  }
-  const mapped = await Promise.all(rows.map(async (row) => {
+  const result = await apiRequest(`/api/v1/admin/registrations?${params}`);
+  const mapped = await Promise.all((result.items || []).map(async (row) => {
     try {
       const detail = await apiRequest(`/api/v1/registrations/${row.id}`);
       return mapRegistration(row, detail);
@@ -64,7 +58,17 @@ export async function obtenerInscripciones({ categoria, estado } = {}) {
       return mapRegistration(row);
     }
   }));
-  return mapped.filter((item) => !categoria || item.categoriaId === Number(categoria));
+  return { ...result, items: mapped };
+}
+
+export async function obtenerTodasLasInscripciones({ eventId, categoria, estado } = {}) {
+  const firstPage = await obtenerInscripciones({ eventId, categoria, estado, page: 1 });
+  const rows = [...firstPage.items];
+  for (let page = 2; page <= firstPage.total_pages; page += 1) {
+    const result = await obtenerInscripciones({ eventId, categoria, estado, page });
+    rows.push(...result.items);
+  }
+  return rows;
 }
 
 export async function actualizarEstadoInscripcion(id, nuevoEstado) {
