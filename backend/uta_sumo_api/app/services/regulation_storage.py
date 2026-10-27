@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from io import BytesIO
-from pathlib import Path
-from uuid import uuid4
 
 from pypdf import PdfReader
 
-from app.core.config import MAX_REGULATION_BYTES, REGULATION_STORAGE_DIR
+from app.core.config import MAX_REGULATION_BYTES
 from app.core.crypto import decrypt_bytes, encrypt_bytes
 
 
@@ -71,44 +68,9 @@ def safe_filename(value: str | None) -> str:
     return name
 
 
-def write_pdf(content: bytes) -> str:
-    REGULATION_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    root = REGULATION_STORAGE_DIR.resolve()
-    key = f"{uuid4().hex}.pdf.enc"
-    target = (root / key).resolve()
-    if target.parent != root:
-        raise RuntimeError("Ruta de almacenamiento de reglamento no válida.")
-    staging = root / f".{key}.tmp"
-    try:
-        with staging.open("xb") as output:
-            output.write(encrypt_bytes(content))
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(staging, target)
-        return key
-    finally:
-        staging.unlink(missing_ok=True)
+def encrypt_regulation_pdf(content: bytes) -> bytes:
+    return encrypt_bytes(content)
 
 
-def delete_pdf(key: str) -> None:
-    path = get_pdf_path(key)
-    if path:
-        path.unlink(missing_ok=True)
-
-
-def read_pdf(key: str) -> bytes | None:
-    path = get_pdf_path(key)
-    if path is None:
-        return None
-    try:
-        return decrypt_bytes(path.read_bytes())
-    except Exception:
-        return None
-
-
-def get_pdf_path(key: str) -> Path | None:
-    if not re.fullmatch(r"[a-f0-9]{32}\.pdf\.enc", key):
-        return None
-    root = REGULATION_STORAGE_DIR.resolve()
-    path = (root / key).resolve()
-    return path if path.parent == root and path.is_file() else None
+def decrypt_regulation_pdf(content: bytes) -> bytes:
+    return decrypt_bytes(content)

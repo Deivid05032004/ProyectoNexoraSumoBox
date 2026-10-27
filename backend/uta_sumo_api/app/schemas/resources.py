@@ -68,6 +68,14 @@ class RobotInput(StrictModel):
     robot_description: str | None = Field(default=None, max_length=500)
 
 
+class RegistrationResourcesInput(StrictModel):
+    team_name: str = Field(min_length=1, max_length=120)
+    robot_name: str = Field(min_length=1, max_length=120)
+    institution_id: int = Field(gt=0)
+    contact_phone: str | None = Field(default=None, max_length=25)
+    robot_description: str | None = Field(default=None, max_length=500)
+
+
 class ParticipantUpdate(StrictModel):
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)

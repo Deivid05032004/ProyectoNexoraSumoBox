@@ -1,10 +1,24 @@
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
+export function urlApi(path) {
+  return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
+}
+
 async function mensajeRespuesta(response) {
   const body = await response.json().catch(() => ({}))
   if (response.ok) return body
-  const detail = Array.isArray(body.detail) ? body.detail.map((item) => item.msg).join(' ') : body.detail
-  throw new Error(detail || `No se pudo completar la solicitud (${response.status}).`)
+  const detail = Array.isArray(body.detail)
+    ? body.detail.map((item) => item.msg).join(' ')
+    : body.detail
+  const error = new Error(
+    (detail && typeof detail === 'object' ? detail.message : detail)
+      || `No se pudo completar la solicitud (${response.status}).`,
+  )
+  if (detail && typeof detail === 'object') {
+    error.code = detail.code
+    error.field = detail.field
+  }
+  throw error
 }
 
 function encabezadosAutorizados(token, json = false) {
@@ -44,18 +58,16 @@ export async function cargarCategoriasEvento(eventId) {
   return mensajeRespuesta(response)
 }
 
-export async function cargarMisOrdenes(token) {
-  return solicitud('/api/v1/payments/my?limit=100', token)
+export async function cargarReglamentosEvento(eventId, categoryId = null) {
+  const params = new URLSearchParams()
+  if (categoryId) params.set('category_id', categoryId)
+  const query = params.size ? `?${params.toString()}` : ''
+  const response = await fetch(urlApi(`/api/v1/events/${eventId}/regulations${query}`))
+  return mensajeRespuesta(response)
 }
 
-async function obtenerOCrearRecurso(path, token, nombre, payload, coincide) {
-  const existentes = await solicitud(`${path}?limit=100`, token)
-  const existente = existentes.find((item) => (
-    item.name.trim().toLocaleUpperCase() === nombre.trim().toLocaleUpperCase()
-    && coincide(item)
-  ))
-  if (existente) return existente
-  return solicitud(path, token, { method: 'POST', body: JSON.stringify(payload) })
+export async function cargarMisOrdenes(token) {
+  return solicitud('/api/v1/payments/my?limit=100', token)
 }
 
 export async function crearInscripcion({
@@ -67,31 +79,23 @@ export async function crearInscripcion({
   robotName,
   participants,
 }) {
-  const equipo = await obtenerOCrearRecurso(
-    '/api/v1/teams',
-    token,
-    teamName,
-    {
-      name: teamName,
+  const resources = await solicitud('/api/v1/registration-resources', token, {
+    method: 'POST',
+    body: JSON.stringify({
+      team_name: teamName,
+      robot_name: robotName,
       institution_id: participant.institution_id,
       contact_phone: participant.mobile_phone || null,
-    },
-    (item) => item.institution_id === participant.institution_id,
-  )
-  const robot = await obtenerOCrearRecurso(
-    '/api/v1/robots',
-    token,
-    robotName,
-    { name: robotName, robot_description: null },
-    () => true,
-  )
+      robot_description: null,
+    }),
+  })
   return solicitud('/api/v1/registrations', token, {
     method: 'POST',
     body: JSON.stringify({
       event_id: Number(eventId),
       category_id: Number(categoryId),
-      team_id: equipo.id,
-      robot_id: robot.id,
+      team_id: resources.team.id,
+      robot_id: resources.robot.id,
       participants: participants.map((item) => ({
         role: item.role,
         first_name: item.first_name.trim(),

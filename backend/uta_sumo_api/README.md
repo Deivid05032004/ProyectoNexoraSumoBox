@@ -20,7 +20,8 @@ API REST con FastAPI, SQLAlchemy y SQL Server. Swagger UI: `/docs`; OpenAPI:
 El archivo `.env` local está ignorado por Git. Conserva `SECRET_KEY` y `PII_ENCRYPTION_KEY` fuera del repositorio y de SQL; se necesitan para restaurar backups cifrados. Cambiar la clave PII requiere re-cifrar los datos. Para SQL Auth configura
 `DB_AUTH_MODE=sql`, `DB_USERNAME` y `DB_PASSWORD`. `CORS_ORIGINS` acepta una
 lista separada por comas. El comodín `*` se rechaza cuando se permiten
-credenciales.
+credenciales. Para desarrollo local permite `localhost` y `127.0.0.1` en los
+puertos `5173` y `5174`; configura los orígenes de producción explícitamente.
 
 ## Auth y permisos
 
@@ -361,12 +362,14 @@ workers se requiere un broker compartido para broadcast entre procesos.
 
 ## Reglamentos por evento y categoría
 
-Los reglamentos son documentos PDF versionados. SQL Server guarda el evento,
-categoría opcional, título, versión, vigencia, estado, SHA-256 y auditoría; el
-PDF se cifra con `PII_ENCRYPTION_KEY` y se conserva en almacenamiento privado.
-Así los nuevos eventos y categorías pueden publicar sus propios archivos sin
-guardar cientos de kilobytes de binario en cada fila. La migración aditiva
-`database/scripts/18_event_regulations.sql` no modifica inscripciones previas.
+Los reglamentos son documentos PDF versionados y cifrados con
+`PII_ENCRYPTION_KEY` directamente en `EventRegulations.FileContent`
+(`VARBINARY(MAX)`). SQL Server guarda también el evento, categoría opcional,
+título, versión, vigencia, estado, SHA-256 y auditoría. Las migraciones 31 y 32
+mueven los PDF históricos desde el almacenamiento cifrado local a SQL Server,
+verifican tamaño y SHA-256, y retiran la columna de ruta local después del
+backfill. Los archivos locales solo se eliminan después de confirmar la
+transacción de contenido.
 
 - `GET /api/v1/events/{event_id}/regulations?category_id={category_id}` es
   público y devuelve el reglamento vigente de la categoría. Si no hay uno
@@ -386,7 +389,8 @@ guardar cientos de kilobytes de binario en cada fila. La migración aditiva
   borrar el historial. `GET /api/v1/admin/regulations/{id}/history` presenta
   cambios auditados y paginados.
 
-La validación comprueba estructura PDF, límite configurable
+La carga y la descarga usan SQL Server; no se crea ningún PDF en una carpeta
+del proyecto. La validación comprueba estructura PDF, límite configurable
 `MAX_REGULATION_BYTES` (20 MiB por defecto), 1–500 páginas, ausencia de
 contraseña, acciones automáticas y adjuntos incrustados. El PDF del ejemplo se
 puede importar en la base existente sin reiniciarla:
@@ -395,6 +399,9 @@ puede importar en la base existente sin reiniciarla:
 .venv\Scripts\python.exe scripts\migrate.py
 .venv\Scripts\python.exe scripts\import_event_regulation.py --file "C:\ruta\Reglamento_Sumo_Amateur.pdf" --event-id 1 --category-id 1 --title "Reglamento categoría Mini Sumo Amateur RC" --publish
 ```
+
+`REGULATION_STORAGE_DIR` solo se consulta durante la migración para encontrar
+archivos de instalaciones antiguas; las nuevas cargas se guardan en SQL Server.
 
 El endpoint público que debe consumir el frontend es
 `GET /api/v1/events/1/regulations?category_id=1`; `download_url` contiene la

@@ -2,10 +2,13 @@ import { useEffect, useState } from 'react'
 import BienvenidaParticipante from './BienvenidaParticipante'
 import Inscripcion from './Inscripcion'
 import MisOrdenes from './MisOrdenes'
+import NavIcon from '../../components/NavIcon'
 import {
   cargarCategoriasEvento,
   cargarConfiguracionEvento,
   cargarDatosInscripcion,
+  cargarReglamentosEvento,
+  urlApi,
 } from '../services/inscripcionesApi'
 import './PanelParticipante.css'
 
@@ -17,8 +20,6 @@ const SECCIONES = [
   { id: 'reglamento', label: 'Reglamento oficial' },
   { id: 'equipo', label: 'Equipo' },
 ]
-const REGLAMENTO_URL = `${import.meta.env.BASE_URL}reglamento-oficial.pdf`
-
 function rango(minimo, maximo) {
   if (minimo == null && maximo == null) return 'No especificado'
   if (minimo != null && maximo != null) return `${minimo}–${maximo}`
@@ -28,6 +29,7 @@ function rango(minimo, maximo) {
 
 export default function ParticipantDashboard({ user }) {
   const [seccion, setSeccion] = useState('inicio')
+  const [menuOpen, setMenuOpen] = useState(false)
   const [eventos, setEventos] = useState([])
   const [eventoId, setEventoId] = useState('')
   const [categorias, setCategorias] = useState([])
@@ -37,8 +39,10 @@ export default function ParticipantDashboard({ user }) {
   const [errorEventos, setErrorEventos] = useState('')
   const [errorCategorias, setErrorCategorias] = useState(null)
   const [errorConfiguracion, setErrorConfiguracion] = useState(null)
-  const [reglamentoDisponible, setReglamentoDisponible] = useState(false)
-  const [verificandoReglamento, setVerificandoReglamento] = useState(true)
+  const [reglamentoCategoriaId, setReglamentoCategoriaId] = useState('')
+  const [reglamentos, setReglamentos] = useState([])
+  const [reglamentoSeleccionadoId, setReglamentoSeleccionadoId] = useState(null)
+  const [cargandoReglamento, setCargandoReglamento] = useState(false)
   const [errorReglamento, setErrorReglamento] = useState('')
   const token = sessionStorage.getItem('uta.access_token')
 
@@ -82,18 +86,25 @@ export default function ParticipantDashboard({ user }) {
   }, [eventoId])
 
   useEffect(() => {
+    if (!eventoId) {
+      setReglamentos([])
+      setCargandoReglamento(false)
+      return undefined
+    }
     let activo = true
-    fetch(REGLAMENTO_URL, { method: 'HEAD' })
-      .then((response) => {
-        const esPdf = response.ok && response.headers.get('content-type')?.includes('application/pdf')
-        if (activo) setReglamentoDisponible(Boolean(esPdf))
+    setCargandoReglamento(true)
+    setErrorReglamento('')
+    cargarReglamentosEvento(eventoId, reglamentoCategoriaId || null)
+      .then((result) => {
+        if (!activo) return
+        const items = Array.isArray(result) ? result : []
+        setReglamentos(items)
+        setReglamentoSeleccionadoId(items[0]?.id ?? null)
       })
-      .catch(() => {
-        if (activo) setErrorReglamento('No se pudo verificar el archivo del reglamento.')
-      })
-      .finally(() => activo && setVerificandoReglamento(false))
+      .catch((error) => activo && setErrorReglamento(error.message || 'No se pudieron cargar los reglamentos.'))
+      .finally(() => activo && setCargandoReglamento(false))
     return () => { activo = false }
-  }, [])
+  }, [eventoId, reglamentoCategoriaId])
 
   const eventoSeleccionado = eventos.find((evento) => String(evento.id) === eventoId)
   const configuracionEvento = configuracion?.event_id === Number(eventoId) ? configuracion : null
@@ -195,26 +206,62 @@ export default function ParticipantDashboard({ user }) {
       )
     }
     if (seccion === 'reglamento') {
+      const regulation = reglamentos.find((item) => item.id === reglamentoSeleccionadoId)
+      const fileUrl = regulation ? urlApi(regulation.download_url) : ''
       return (
         <section className="participant-dashboard-panel">
           <header className="participant-panel-heading">
             <p className="participant-dashboard-eyebrow">DOCUMENTACIÓN</p>
             <h2>Reglamento oficial</h2>
-            <p>Consulta las reglas vigentes antes de completar la inscripción de tu equipo.</p>
+            <p>Consulta el documento vigente que administra el organizador para el evento y la categoría seleccionados.</p>
           </header>
-          {verificandoReglamento && <p className="participant-dashboard-message">Verificando el documento...</p>}
+          <label className="participant-event-select" htmlFor="participant-regulation-event">
+            <span>Evento</span>
+            <select id="participant-regulation-event" value={eventoId}
+              onChange={(event) => { setEventoId(event.target.value); setReglamentoCategoriaId('') }}
+              disabled={!eventos.length}>
+              {!eventos.length && <option value="">No hay eventos disponibles</option>}
+              {eventos.map((evento) => <option key={evento.id} value={evento.id}>{evento.name} {evento.edition_year}</option>)}
+            </select>
+          </label>
+          <label className="participant-event-select" htmlFor="participant-regulation-category">
+            <span>Categoría</span>
+            <select id="participant-regulation-category" value={reglamentoCategoriaId}
+              onChange={(event) => setReglamentoCategoriaId(event.target.value)}
+              disabled={!eventoId || cargandoCategorias}>
+              <option value="">Todos los reglamentos publicados</option>
+              {categoriasEvento.map((categoria) => (
+                <option key={categoria.category_id} value={categoria.category_id}>{categoria.category_name}</option>
+              ))}
+            </select>
+          </label>
+          {cargandoReglamento && <p className="participant-dashboard-message">Cargando reglamentos publicados...</p>}
           {errorReglamento && <p className="participant-dashboard-error" role="alert">{errorReglamento}</p>}
-          {!verificandoReglamento && reglamentoDisponible && (
+          {!cargandoReglamento && !errorReglamento && reglamentos.length > 0 && (
             <>
-              <a className="participant-document-link" href={REGLAMENTO_URL} target="_blank" rel="noreferrer">Abrir o descargar reglamento (PDF)</a>
-              <iframe className="participant-regulation-viewer" src={REGLAMENTO_URL} title="Reglamento oficial de la competencia" />
+              <div className="participant-regulation-list">
+                {reglamentos.map((item) => (
+                  <article className="participant-info-card" key={item.id}>
+                    <h3>{item.title}</h3>
+                    <p>{item.event_name} · {item.category_name || 'Reglamento general del evento'} · Versión {item.version}</p>
+                    <p>Vigente desde {item.effective_from}{item.effective_until ? ` hasta ${item.effective_until}` : ''}</p>
+                    <button className="participant-document-link" type="button"
+                      aria-pressed={item.id === reglamentoSeleccionadoId}
+                      onClick={() => setReglamentoSeleccionadoId(item.id)}>
+                      {item.id === reglamentoSeleccionadoId ? 'Documento seleccionado' : 'Ver este reglamento'}
+                    </button>
+                    <a className="participant-document-link participant-document-link-secondary"
+                      href={urlApi(item.download_url)} target="_blank" rel="noreferrer">Abrir o descargar PDF</a>
+                  </article>
+                ))}
+              </div>
+              {regulation && <iframe className="participant-regulation-viewer" src={fileUrl} title={`Reglamento ${regulation.title}`} />}
             </>
           )}
-          {!verificandoReglamento && !reglamentoDisponible && !errorReglamento && (
+          {!cargandoReglamento && !errorReglamento && reglamentos.length === 0 && (
             <div className="participant-info-card">
               <h3>Documento pendiente de publicar</h3>
-              <p>Guarda tu PDF como <strong>reglamento-oficial.pdf</strong> dentro de la carpeta <code>frontend/uta-sumo-web/public/</code>. El panel lo mostrará automáticamente en esta sección.</p>
-              <p>Si me compartes el archivo, puedo dejarlo integrado en esa ubicación.</p>
+              <p>El administrador aún no ha publicado un reglamento vigente para el evento o categoría seleccionados.</p>
             </div>
           )}
         </section>
@@ -258,32 +305,43 @@ export default function ParticipantDashboard({ user }) {
   return (
     <main className="participant-dashboard">
       <header className="participant-dashboard-header">
-        <p className="participant-dashboard-eyebrow">CUENTA DE PARTICIPANTE</p>
-        <h1>Hola{user?.first_name ? `, ${user.first_name}` : ''}</h1>
-        <p>Administra tu inscripción, consulta tus órdenes y revisa la información de la competencia.</p>
+        <div>
+          <p className="participant-dashboard-eyebrow">CUENTA DE PARTICIPANTE</p>
+          <h1>Hola{user?.first_name ? `, ${user.first_name}` : ''}</h1>
+          <p>Administra tu inscripción, consulta tus órdenes y revisa la información de la competencia.</p>
+        </div>
+        <button className="participant-menu-toggle" type="button" aria-expanded={menuOpen}
+          aria-controls="participant-dashboard-nav" onClick={() => setMenuOpen((open) => !open)}>
+          <span aria-hidden="true">{menuOpen ? '×' : '☰'}</span>{menuOpen ? 'Cerrar menú' : 'Secciones'}
+        </button>
       </header>
-      <nav className="participant-dashboard-nav" role="tablist" aria-label="Secciones del panel de participante">
-        {SECCIONES.map((item) => (
-          <button
-            key={item.id}
-            id={`participant-tab-${item.id}`}
-            type="button"
-            role="tab"
-            aria-selected={seccion === item.id}
-            aria-controls="participant-panel-content"
-            onClick={() => setSeccion(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
-      <div
-        className="participant-dashboard-content"
-        id="participant-panel-content"
-        role="tabpanel"
-        aria-labelledby={`participant-tab-${seccion}`}
-      >
-        {panelSeccion()}
+      <div className="participant-dashboard-layout">
+        <aside className={`participant-dashboard-sidebar${menuOpen ? ' is-open' : ''}`}>
+          <nav id="participant-dashboard-nav" className="participant-dashboard-nav"
+            aria-label="Secciones del panel de participante">
+            {SECCIONES.map((item) => (
+              <button
+                key={item.id}
+                id={`participant-tab-${item.id}`}
+                type="button"
+                aria-current={seccion === item.id ? 'page' : undefined}
+                aria-controls="participant-panel-content"
+                onClick={() => { setSeccion(item.id); setMenuOpen(false) }}
+              >
+                <NavIcon name={{ inicio: 'home', inscripcion: 'registration', ordenes: 'orders', categorias: 'categories', reglamento: 'rules', equipo: 'team' }[item.id]} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </nav>
+        </aside>
+        <section
+          className="participant-dashboard-content"
+          id="participant-panel-content"
+          aria-labelledby={`participant-tab-${seccion}`}
+          aria-label={`Contenido: ${SECCIONES.find((item) => item.id === seccion)?.label || 'Panel'}`}
+        >
+          {panelSeccion()}
+        </section>
       </div>
     </main>
   )

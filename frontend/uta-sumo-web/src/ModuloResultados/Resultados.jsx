@@ -2,8 +2,6 @@ import { useEffect, useState, useRef } from 'react';
 import {
   obtenerResultadosTorneo,
   EVENTO_RESULTADOS_ACTUALIZADOS,
-  EVENTO_CRONOMETRO_ACTUALIZADO,
-  obtenerConfiguracionCronometro,
   suscribirBroadcastChannel,
   suscribirWebSocketCombate,
   iniciarPolling,
@@ -51,8 +49,11 @@ export default function Resultados() {
   const [cargando, setCargando] = useState(true);
 
   // Estados del Cronómetro (3:00 estándar de sumo)
-  const [tiempoRestante, setTiempoRestante] = useState(() => obtenerConfiguracionCronometro().seconds);
-  const [cronometroHabilitado, setCronometroHabilitado] = useState(() => obtenerConfiguracionCronometro().enabled);
+  const [tiempoRestante, setTiempoRestante] = useState(180);
+  const [duracionCronometro, setDuracionCronometro] = useState(180);
+  const [direccionCronometro, setDireccionCronometro] = useState('DOWN');
+  const [estadoCronometro, setEstadoCronometro] = useState('STOPPED');
+  const [cronometroHabilitado, setCronometroHabilitado] = useState(false);
   const [cronometroCorriendo, setCronometroCorriendo] = useState(false);
 
   // Estados de Animaciones
@@ -99,11 +100,6 @@ export default function Resultados() {
     setCelebrandoGanador(nombreRobot);
   };
 
-  const reiniciarCronometro = () => {
-    setTiempoRestante(obtenerConfiguracionCronometro().seconds);
-    setCronometroCorriendo(cronometroHabilitado && combate?.estado === 'En combate');
-  };
-
   const formatTiempo = (segundos) => {
     const min = Math.floor(segundos / 60);
     const seg = segundos % 60;
@@ -123,13 +119,18 @@ export default function Resultados() {
 
       setCombate(res);
       setCargando(false);
+      if (res.cronometro) {
+        setCronometroHabilitado(Boolean(res.cronometro.enabled));
+        setDuracionCronometro(Math.max(1, Number(res.cronometro.duration_seconds ?? 180)));
+        setDireccionCronometro(res.cronometro.direction === 'UP' ? 'UP' : 'DOWN');
+        setTiempoRestante(Math.max(0, Number(res.cronometro.current_seconds ?? res.cronometro.remaining_seconds ?? 180)));
+        setEstadoCronometro(res.cronometro.status || 'STOPPED');
+        setCronometroCorriendo(res.cronometro.status === 'RUNNING' && Boolean(res.cronometro.enabled));
+      }
 
       // Animación de espadas al iniciar el combate
       if (res.estado === 'En combate' && ultimoEstadoRef.current !== 'En combate') {
         activarAnimacionEspadas();
-        setCronometroCorriendo(cronometroHabilitado);
-      } else if (res.estado !== 'En combate') {
-        setCronometroCorriendo(false);
       }
       ultimoEstadoRef.current = res.estado;
 
@@ -184,20 +185,9 @@ export default function Resultados() {
 
     window.addEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleEventoDom);
 
-    const handleTimerConfig = (event) => {
-      const config = event.detail || obtenerConfiguracionCronometro();
-      setCronometroHabilitado(config.enabled);
-      setTiempoRestante(config.seconds);
-      setCronometroCorriendo(Boolean(config.enabled && ultimoEstadoRef.current === 'En combate'));
-    };
-    window.addEventListener(EVENTO_CRONOMETRO_ACTUALIZADO, handleTimerConfig);
-
     // CAPA 3: Evento 'storage' del navegador — detecta cambios en localStorage
     // hechos desde otra pestaña en navegadores que no soporten BroadcastChannel.
     const handleStorage = (e) => {
-      if (e.key === 'uta.torneo.cronometro' && e.newValue) {
-        try { handleTimerConfig({ detail: JSON.parse(e.newValue) }); } catch { /* Ignora valor inválido */ }
-      }
       if (e.key === 'uta.torneo.resultados' && e.newValue) {
         try {
           const datos = JSON.parse(e.newValue);
@@ -222,24 +212,28 @@ export default function Resultados() {
       destroyBroadcast();
       stopWebSocket();
       window.removeEventListener(EVENTO_RESULTADOS_ACTUALIZADOS, handleEventoDom);
-      window.removeEventListener(EVENTO_CRONOMETRO_ACTUALIZADO, handleTimerConfig);
       window.removeEventListener('storage', handleStorage);
       stopPolling();
     };
-  }, [cronometroHabilitado]);
+  }, []);
 
   // Lógica del Cronómetro (cuenta regresiva de 3 minutos)
   useEffect(() => {
     let intervalo = null;
-    if (cronometroCorriendo && tiempoRestante > 0) {
+    const dentroDelRango = direccionCronometro === 'UP'
+      ? tiempoRestante < duracionCronometro
+      : tiempoRestante > 0;
+    if (cronometroCorriendo && dentroDelRango) {
       intervalo = setInterval(() => {
-        setTiempoRestante((prev) => Math.max(0, prev - 1));
+        setTiempoRestante((prev) => direccionCronometro === 'UP'
+          ? Math.min(duracionCronometro, prev + 1)
+          : Math.max(0, prev - 1));
       }, 1000);
     }
     return () => {
       if (intervalo) clearInterval(intervalo);
     };
-  }, [cronometroCorriendo, tiempoRestante]);
+  }, [cronometroCorriendo, tiempoRestante, direccionCronometro, duracionCronometro]);
 
   if (cargando || !combate) {
     return (
@@ -362,26 +356,15 @@ export default function Resultados() {
             <span className="giant-vs-text">VS</span>
 
             {/* CRONÓMETRO OFICIAL DE COMBATE */}
-            {cronometroHabilitado ? <div className={`combat-timer-box ${tiempoRestante === 0 ? 'timer-ended' : ''}`}>
+            {cronometroHabilitado ? <div className={`combat-timer-box ${estadoCronometro === 'FINISHED' || (direccionCronometro === 'DOWN' ? tiempoRestante === 0 : tiempoRestante >= duracionCronometro) ? 'timer-ended' : ''}`}>
               <div className="timer-header-label">⏱️ CRONÓMETRO</div>
               <div className="timer-digits">{formatTiempo(tiempoRestante)}</div>
-              <div className="timer-controls-row">
-                <button
-                  type="button"
-                  className="btn-timer-action"
-                  onClick={() => setCronometroCorriendo(!cronometroCorriendo)}
-                  title={cronometroCorriendo ? 'Pausar cronómetro' : 'Reanudar cronómetro'}
-                >
-                  {cronometroCorriendo ? '⏸' : '▶'}
-                </button>
-                <button
-                  type="button"
-                  className="btn-timer-action"
-                  onClick={reiniciarCronometro}
-                  title="Reiniciar a 03:00"
-                >
-                  ↺
-                </button>
+              <div className="timer-server-status" aria-live="polite">
+                {cronometroCorriendo && (direccionCronometro === 'DOWN' ? tiempoRestante > 0 : tiempoRestante < duracionCronometro)
+                  ? `EN MARCHA · ${direccionCronometro === 'UP' ? 'PROGRESIVO' : 'REGRESIVO'}`
+                  : estadoCronometro === 'FINISHED' || (direccionCronometro === 'DOWN' ? tiempoRestante === 0 : tiempoRestante >= duracionCronometro)
+                    ? 'TIEMPO FINALIZADO'
+                    : 'EN PAUSA'}
               </div>
             </div> : <div className="combat-timer-box timer-disabled-label">CRONÓMETRO DESACTIVADO</div>}
 

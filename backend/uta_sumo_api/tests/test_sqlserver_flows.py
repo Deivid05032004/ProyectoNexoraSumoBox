@@ -3,6 +3,7 @@ import os
 import uuid
 from datetime import date
 from decimal import Decimal
+from time import sleep
 
 import pytest
 from fastapi.testclient import TestClient
@@ -724,7 +725,14 @@ def test_current_combat_http_websocket_flow_persists_and_broadcasts(sql_api, mon
         bind=connection, join_transaction_mode="create_savepoint"))
     with client.websocket_connect("/ws/combate-actual") as socket:
         initial = socket.receive_json()
-        assert initial["estado_code"] == "SIN_COMBATE_ACTIVO"
+        assert "estado_code" in initial and "cronometro" in initial
+        if initial.get("match_id") and initial.get("estado_code") in {"EN_VIVO", "PAUSADO"}:
+            finished = client.put("/api/v1/competition/combate-actual", headers=staff["headers"], json={
+                "match_id": initial["match_id"], "status": "FINALIZADO",
+                "reason": "Aislamiento de prueba SQL/WebSocket",
+            })
+            assert finished.status_code == 200, finished.text
+            assert socket.receive_json() == finished.json()
         update = client.put("/api/v1/competition/combate-actual",
             headers=staff["headers"], json={
                 "match_id": match_response.json()["match_id"],
@@ -738,8 +746,72 @@ def test_current_combat_http_websocket_flow_persists_and_broadcasts(sql_api, mon
         assert response["robotA"]["puntos"] == 2
         assert response["robotB"]["puntos"] == 1
         assert response["detalles"] == "Ronda inicial"
+        assert response["cronometro"]["enabled"] is True
+        assert response["cronometro"]["direction"] == "DOWN"
+        assert response["cronometro"]["status"] == "RUNNING"
         pushed = socket.receive_json()
         assert pushed == response
+
+        match_url = "/api/v1/competition/combate-actual"
+        match_paused = client.put(match_url, headers=staff["headers"], json={
+            "match_id": response["match_id"], "status": "PAUSADO",
+            "reason": "Pausa de prueba del cronómetro",
+        })
+        assert match_paused.status_code == 200, match_paused.text
+        assert match_paused.json()["cronometro"]["status"] == "PAUSED"
+        assert socket.receive_json() == match_paused.json()
+        match_resumed = client.put(match_url, headers=staff["headers"], json={
+            "match_id": response["match_id"], "status": "EN_VIVO",
+            "reason": "Reanudación de prueba del cronómetro",
+        })
+        assert match_resumed.status_code == 200, match_resumed.text
+        assert match_resumed.json()["cronometro"]["status"] == "RUNNING"
+        assert socket.receive_json() == match_resumed.json()
+
+        sleep(1.1)
+        countdown_tick = client.get(match_url).json()["cronometro"]
+        assert countdown_tick["current_seconds"] < response["cronometro"]["current_seconds"]
+
+        timer_url = "/api/v1/competition/combate-actual/cronometro"
+        assert client.put(timer_url, json={"enabled": True, "duration_seconds": 10}).status_code == 401
+        assert client.post(f"{timer_url}/start", headers={
+            "Authorization": f"Bearer {participant['access_token']}"}).status_code == 403
+        configured = client.put(timer_url, headers=staff["headers"], json={
+            "enabled": True, "duration_seconds": 10, "direction": "UP",
+        })
+        assert configured.status_code == 200, configured.text
+        assert configured.json()["cronometro"]["direction"] == "UP"
+        assert configured.json()["cronometro"]["status"] == "RUNNING"
+        assert configured.json()["cronometro"]["current_seconds"] <= 1
+        assert socket.receive_json() == configured.json()
+        sleep(1.1)
+        countup_tick = client.get("/api/v1/competition/combate-actual").json()["cronometro"]
+        assert countup_tick["current_seconds"] > configured.json()["cronometro"]["current_seconds"]
+
+        paused = client.post(f"{timer_url}/pause", headers=staff["headers"])
+        assert paused.status_code == 200, paused.text
+        assert paused.json()["cronometro"]["status"] == "PAUSED"
+        assert 0 <= paused.json()["cronometro"]["current_seconds"] <= 10
+        assert socket.receive_json() == paused.json()
+
+        started = client.post(f"{timer_url}/start", headers=staff["headers"])
+        assert started.status_code == 200, started.text
+        assert started.json()["cronometro"]["status"] == "RUNNING"
+        assert socket.receive_json() == started.json()
+
+        reset = client.post(f"{timer_url}/reset", headers=staff["headers"])
+        assert reset.status_code == 200, reset.text
+        assert reset.json()["cronometro"]["status"] == "STOPPED"
+        assert reset.json()["cronometro"]["current_seconds"] == 0
+        assert socket.receive_json() == reset.json()
+
+        configured_down = client.put(timer_url, headers=staff["headers"], json={
+            "enabled": True, "duration_seconds": 10, "direction": "DOWN",
+        })
+        assert configured_down.status_code == 200, configured_down.text
+        assert configured_down.json()["cronometro"]["status"] == "RUNNING"
+        assert 9 <= configured_down.json()["cronometro"]["remaining_seconds"] <= 10
+        assert socket.receive_json() == configured_down.json()
 
 
 def test_registration_rolls_back_every_row_when_payment_insert_fails(sql_api, monkeypatch):

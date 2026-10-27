@@ -84,12 +84,27 @@ body {
   transition: color 0.2s;
 }
 
+.nav-link-icon { display: inline-flex; align-items: center; gap: 0.48rem; white-space: nowrap; }
+.nav-link-icon svg { flex: 0 0 auto; opacity: 0.88; }
+
 .nav-link:hover {
   color: var(--text-main);
 }
 
-.nav-link-hidden {
+.navbar-menu-toggle {
   display: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 7px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: #1c212c;
+  color: var(--text-main);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 650;
 }
 
 .nav-logout {
@@ -409,15 +424,15 @@ body {
 
 /* Módulo público de inscripciones: estética basada en el prototipo de Eventix. */
 .registration-section {
-  --registration-bg: #eef1f3;
-  --registration-surface: #fff;
-  --registration-ink: #12161b;
-  --registration-muted: #556170;
-  --registration-line: #d3dae0;
-  --registration-accent: #1f4fd8;
-  --registration-warn: #8a4b00;
-  --registration-warn-bg: #fff1cf;
-  --registration-error: #a4262c;
+  --registration-bg: var(--surface-light-muted);
+  --registration-surface: var(--surface-light);
+  --registration-ink: var(--text-light-primary);
+  --registration-muted: var(--text-light-secondary);
+  --registration-line: var(--line-light);
+  --registration-accent: var(--brand-blue);
+  --registration-warn: var(--status-warning);
+  --registration-warn-bg: var(--status-warning-bg);
+  --registration-error: var(--status-error);
   max-width: 1040px;
   margin: 0 auto;
   padding: 28px 20px 60px;
@@ -683,4 +698,34 @@ body {
   .primary-button {
     width: 100%;
   }
+}
+
+@media (max-width: 760px) {
+  .navbar-top {
+    position: relative;
+    z-index: 20;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 0.75rem 1rem;
+  }
+
+  .navbar-menu-toggle { display: inline-flex; margin-left: auto; }
+
+  .navbar-nav {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    background: #12161f;
+  }
+
+  .navbar-nav.is-open { display: flex; }
+  .navbar-nav .nav-link, .navbar-nav .nav-logout, .navbar-nav .btn-panel { padding: 10px 12px; text-align: left; }
+  .navbar-nav .btn-panel { display: block; }
+  .navbar-nav-admin { display: flex; width: auto; margin-left: auto; padding: 0; border: 0; background: transparent; }
+  .navbar-nav-admin .btn-panel { display: inline-flex; }
 }

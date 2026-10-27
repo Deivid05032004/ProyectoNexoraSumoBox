@@ -9,6 +9,7 @@ import Inscripcion from './ModuloIncripcion/components/Inscripcion';
 import ParticipantAccess from './ModuloParticipante/ParticipantAccess';
 import PanelParticipante from './ModuloIncripcion/components/PanelParticipante';
 import fiseibotAvatar from './assets/fiseibot-avatar.png';
+import NavIcon from './components/NavIcon';
 
 function leerUsuarioSesion() {
   try {
@@ -21,6 +22,7 @@ function leerUsuarioSesion() {
 export default function App() {
   const navigate = useNavigate();
   const [, setUser] = useState(leerUsuarioSesion);
+  const [menuOpen, setMenuOpen] = useState(false);
   const user = leerUsuarioSesion();
 
   useEffect(() => {
@@ -54,29 +56,37 @@ export default function App() {
             <span className="brand-text">Fiseibot</span>
           </Link>
         </div>
-        <nav className="navbar-nav" aria-label="Navegación principal">
-          {!participanteActivo && <Link to="/" className="nav-link">Inicio</Link>}
-          <Link to="/resultados" className="nav-link">Ver resultados</Link>
-          <Link to={participanteActivo ? '/participante/panel' : '/participante'} className="nav-link">Participantes</Link>
-          {participanteActivo ? (
-            <>
-              <Link to="/inscripcion" className="nav-link nav-link-hidden">Mi inscripción</Link>
-              <button type="button" className="nav-logout" onClick={cerrarSesionParticipante}>
-                Cerrar sesión
-              </button>
-            </>
-          ) : (
-            <>
-              <Link to="/inscripcion" className="nav-link nav-link-hidden">Inscripción</Link>
-              <Link to="/registro" className="nav-link nav-link-hidden">Crear cuenta</Link>
-            </>
-          )}
-          {!participanteActivo && (
-            <Link to={adminActivo ? "/admin/dashboard" : "/admin"} className="btn-panel">
-              {adminActivo ? "Panel de administración" : "Personal autorizado"}
+        {!adminActivo && <button className="navbar-menu-toggle" type="button" aria-expanded={menuOpen}
+          aria-controls="main-navigation" onClick={() => setMenuOpen((open) => !open)}>
+          <span aria-hidden="true">{menuOpen ? '×' : '☰'}</span><span>{menuOpen ? 'Cerrar' : 'Menú'}</span>
+        </button>}
+        {adminActivo ? (
+          <nav id="main-navigation" className={`navbar-nav navbar-nav-admin${menuOpen ? ' is-open' : ''}`} aria-label="Navegación de administración">
+            <Link to="/admin/dashboard" className="btn-panel nav-link-icon" onClick={() => setMenuOpen(false)}>
+              <NavIcon name="panel" />Panel de administración
             </Link>
-          )}
-        </nav>
+          </nav>
+        ) : (
+          <nav id="main-navigation" className={`navbar-nav${menuOpen ? ' is-open' : ''}`} aria-label="Navegación principal">
+            {participanteActivo ? (
+              <>
+                <Link to="/participante/panel" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="home" />Inicio</Link>
+                <Link to="/resultados" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="results" />Combate en vivo</Link>
+                <Link to="/inscripcion" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="registration" />Inscribir equipo</Link>
+                <button type="button" className="nav-logout nav-link-icon" onClick={cerrarSesionParticipante}><NavIcon name="logout" />Cerrar sesión</button>
+              </>
+            ) : (
+              <>
+                <Link to="/" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="home" />Inicio</Link>
+                <Link to="/resultados" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="results" />Ver combate</Link>
+                <Link to="/participante" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="participants" />Participantes</Link>
+                <Link to="/inscripcion" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="registration" />Inscripción</Link>
+                <Link to="/registro" className="nav-link nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="register" />Crear cuenta</Link>
+                <Link to="/admin" className="btn-panel nav-link-icon" onClick={() => setMenuOpen(false)}><NavIcon name="panel" />Personal autorizado</Link>
+              </>
+            )}
+          </nav>
+        )}
       </header>
       <div className="app-main">
         <Routes>

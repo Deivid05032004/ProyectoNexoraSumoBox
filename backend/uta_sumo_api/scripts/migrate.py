@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 import pyodbc
-from sqlalchemy import text
+from sqlalchemy import LargeBinary, bindparam, text
 
 ROOT = Path(__file__).resolve().parents[3]
 API_DIR = Path(__file__).resolve().parents[1]
@@ -22,8 +22,9 @@ sys.path.insert(0, str(API_DIR))
 
 from database import DB_NAME, DB_SERVER, engine, connection_string
 from app.core.crypto import (email_lookup_hash, encrypt_bytes, encrypt_text, is_encrypted,
-                             decrypt_text, payment_reference_lookup_hash)
-from app.core.config import RECEIPT_STORAGE_DIR
+                             decrypt_text, payment_reference_lookup_hash,
+                             resource_name_lookup_hash, normalize_resource_name)
+from app.core.config import RECEIPT_STORAGE_DIR, REGULATION_STORAGE_DIR
 
 MIGRATIONS = [
     ROOT / "database/scripts/02_create_tables.sql",
@@ -50,6 +51,14 @@ MIGRATIONS = [
     ROOT / "database/scripts/22_event_category_rules.sql",
     ROOT / "database/scripts/23_official_event_category_rules.sql",
     ROOT / "database/scripts/24_combat_public_details.sql",
+    ROOT / "database/scripts/25_registration_roster_and_match_timer.sql",
+    ROOT / "database/scripts/26_enable_match_timer_by_default.sql",
+    ROOT / "database/scripts/27_match_timer_direction.sql",
+    ROOT / "database/scripts/28_start_clock_for_live_active_match.sql",
+    ROOT / "database/scripts/29_resource_name_lookup_hashes.sql",
+    ROOT / "database/scripts/30_unique_resource_names.sql",
+    ROOT / "database/scripts/31_regulations_database_content.sql",
+    ROOT / "database/scripts/32_finalize_regulations_database_content.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",
@@ -205,6 +214,7 @@ def _apply_migrations() -> None:
             print(f"SKIP {migration_id}")
             continue
         file_backups = []
+        regulation_file_cleanup = []
         try:
             with engine.begin() as conn:
                 raw = conn.connection.driver_connection.cursor()
@@ -215,6 +225,10 @@ def _apply_migrations() -> None:
                     raw.close()
                 if path.name == "06_email_encryption_upgrade.sql":
                     _backfill_encrypted_pii(conn, file_backups)
+                if path.name == "29_resource_name_lookup_hashes.sql":
+                    _backfill_resource_name_hashes(conn)
+                if path.name == "31_regulations_database_content.sql":
+                    regulation_file_cleanup = _backfill_regulation_file_content(conn)
                 conn.execute(text("""
                     INSERT INTO dbo.SchemaMigrations(MigrationId,Checksum)
                     VALUES (:id,:checksum)
@@ -222,8 +236,11 @@ def _apply_migrations() -> None:
         except Exception:
             _restore_receipt_files(file_backups)
             raise
+        for legacy_file in regulation_file_cleanup:
+            legacy_file.unlink(missing_ok=True)
         print(f"APPLIED {migration_id}")
     _backfill_payment_reference_hashes()
+    _cleanup_legacy_regulation_files()
 
 
 def _backfill_payment_reference_hashes() -> None:
@@ -242,6 +259,121 @@ def _backfill_payment_reference_hashes() -> None:
                 conn.execute(text("""
                     UPDATE dbo.Payments SET PaymentReferenceLookupHash=:hash WHERE PaymentId=:id
                 """), {"hash": lookup_hash, "id": payment_id})
+
+
+def _backfill_resource_name_hashes(conn) -> None:
+    """Backfill unique, keyed name indexes and refuse ambiguous legacy names."""
+    for table, id_column, resource_type in (
+        ("Teams", "TeamId", "team"), ("Robots", "RobotId", "robot"),
+    ):
+        rows = conn.execute(text(
+            f"SELECT {id_column},Name FROM dbo.{table} ORDER BY {id_column}"
+        )).all()
+        seen: dict[str, int] = {}
+        duplicates: list[tuple[int, int]] = []
+        pending: list[tuple[int, str]] = []
+        empty_ids: list[int] = []
+        for record_id, encrypted_name in rows:
+            name = (decrypt_text(encrypted_name) or "").strip()
+            if not normalize_resource_name(name):
+                empty_ids.append(record_id)
+                continue
+            lookup_hash = resource_name_lookup_hash(name, resource_type)
+            prior_id = seen.get(lookup_hash)
+            if prior_id is not None:
+                duplicates.append((prior_id, record_id))
+            else:
+                seen[lookup_hash] = record_id
+            pending.append((record_id, lookup_hash))
+        if empty_ids:
+            raise RuntimeError(
+                f"Migración de nombres detenida: {table} contiene nombres vacíos en IDs {empty_ids[:10]}. "
+                "Corríjalos antes de reintentar."
+            )
+        if duplicates:
+            raise RuntimeError(
+                f"Migración de nombres detenida: {table} ya contiene nombres duplicados "
+                f"(pares de IDs {duplicates[:10]}). Renombre los registros duplicados conservando sus "
+                "inscripciones y vuelva a ejecutar la migración."
+            )
+        for record_id, lookup_hash in pending:
+            conn.execute(text(
+                f"UPDATE dbo.{table} SET NameLookupHash=:hash WHERE {id_column}=:id"
+            ), {"hash": lookup_hash, "id": record_id})
+
+
+def _backfill_regulation_file_content(conn):
+    """Move legacy encrypted regulation PDFs into SQL Server before dropping paths."""
+    from app.core.crypto import decrypt_bytes
+
+    root = REGULATION_STORAGE_DIR.resolve()
+    rows = conn.execute(text("""
+        SELECT RegulationId,StorageKey,FileSizeBytes,Sha256,FileContent
+        FROM dbo.EventRegulations ORDER BY RegulationId
+    """)).mappings().all()
+    cleanup = []
+    for row in rows:
+        if row["FileContent"] is not None:
+            continue
+        key = row["StorageKey"]
+        if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{32}\.pdf\.enc", key):
+            raise RuntimeError(
+                f"Reglamento {row['RegulationId']} tiene una referencia de archivo local inválida; "
+                "no se modificó la base."
+            )
+        legacy_path = (root / key).resolve()
+        if legacy_path.parent != root or not legacy_path.is_file():
+            raise RuntimeError(
+                f"Falta el PDF local del reglamento {row['RegulationId']}; "
+                "se conserva la migración pendiente y la base no se modifica."
+            )
+        try:
+            plaintext = decrypt_bytes(legacy_path.read_bytes())
+        except Exception as exc:
+            raise RuntimeError(
+                f"No se pudo descifrar el PDF local del reglamento {row['RegulationId']}; "
+                "se conserva el archivo y no se modifica la base."
+            ) from exc
+        digest = hashlib.sha256(plaintext).hexdigest()
+        if len(plaintext) != row["FileSizeBytes"] or digest.lower() != row["Sha256"].strip().lower():
+            raise RuntimeError(
+                f"El tamaño o SHA-256 del reglamento {row['RegulationId']} no coincide; "
+                "se conserva el archivo y no se modifica la base."
+            )
+        conn.execute(text("""
+            UPDATE dbo.EventRegulations SET FileContent=:content WHERE RegulationId=:id
+        """).bindparams(bindparam("content", type_=LargeBinary)),
+            {"content": encrypt_bytes(plaintext), "id": row["RegulationId"]})
+        cleanup.append(legacy_path)
+    return cleanup
+
+
+def _cleanup_legacy_regulation_files() -> None:
+    """Remove managed legacy copies only after SQL Server owns every PDF."""
+    with engine.connect() as conn:
+        if conn.execute(text("SELECT OBJECT_ID('dbo.EventRegulations','U')")).scalar_one_or_none() is None:
+            return
+        has_content = conn.execute(text(
+            "SELECT CASE WHEN COL_LENGTH('dbo.EventRegulations','FileContent') IS NULL THEN 0 ELSE 1 END"
+        )).scalar_one()
+        has_legacy_key = conn.execute(text(
+            "SELECT CASE WHEN COL_LENGTH('dbo.EventRegulations','StorageKey') IS NULL THEN 0 ELSE 1 END"
+        )).scalar_one()
+        if not has_content or has_legacy_key:
+            return
+        missing = conn.execute(text(
+            "SELECT COUNT_BIG(*) FROM dbo.EventRegulations WHERE FileContent IS NULL"
+        )).scalar_one()
+    if missing:
+        return
+    root = REGULATION_STORAGE_DIR.resolve()
+    if not root.is_dir():
+        return
+    for candidate in root.glob("*.pdf.enc"):
+        resolved = candidate.resolve()
+        if (resolved.parent == root and candidate.is_file()
+                and re.fullmatch(r"[a-f0-9]{32}\.pdf\.enc", candidate.name)):
+            candidate.unlink()
 
 
 def _backfill_encrypted_pii(conn, file_backups) -> None:

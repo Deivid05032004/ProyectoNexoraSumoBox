@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     email_check_deliverability: bool = True
     access_token_expire_minutes: int = 30
-    cors_origins: str = "http://localhost:5173,http://localhost:5174"
+    cors_origins: str = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
     receipt_storage_dir: str | None = None
     max_receipt_bytes: int = 5 * 1024 * 1024
     regulation_storage_dir: str | None = None

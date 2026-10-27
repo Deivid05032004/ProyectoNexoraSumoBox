@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiRequest } from '../services/adminApi';
 import { obtenerInscripciones } from '../services/adminInscripcionesApi';
-import { CRONOMETRO_INICIAL, obtenerConfiguracionCronometro, guardarConfiguracionCronometro } from '../../ModuloResultados/services/resultadosApi';
+import { CRONOMETRO_INICIAL } from '../../ModuloResultados/services/resultadosApi';
 import './ResultadosModal.css';
 
 function mapRobotRegistration(item) {
@@ -39,6 +39,8 @@ export default function ResultadosModal({ isOpen, onClose }) {
   const [timerEnabled, setTimerEnabled] = useState(CRONOMETRO_INICIAL.enabled);
   const [timerMinutes, setTimerMinutes] = useState(Math.floor(CRONOMETRO_INICIAL.seconds / 60));
   const [timerSeconds, setTimerSeconds] = useState(CRONOMETRO_INICIAL.seconds % 60);
+  const [timerDirection, setTimerDirection] = useState('DOWN');
+  const [timerSaving, setTimerSaving] = useState(false);
   const lastPairRef = useRef('');
   const combatRef = useRef(null);
 
@@ -65,6 +67,12 @@ export default function ResultadosModal({ isOpen, onClose }) {
       setRobots(unique);
       setCombat(current);
       combatRef.current = current;
+      if (current?.cronometro) {
+        setTimerEnabled(Boolean(current.cronometro.enabled));
+        setTimerMinutes(Math.floor(Number(current.cronometro.duration_seconds || 180) / 60));
+        setTimerSeconds(Number(current.cronometro.duration_seconds || 180) % 60);
+        setTimerDirection(current.cronometro.direction || 'DOWN');
+      }
       if (current?.active) {
         const a = unique.find((robot) => robot.event_id === current.event_id && robot.category_id === current.category_id
           && robot.team_id === current.team_id_a && robot.robot_id === current.robot_id_a);
@@ -84,18 +92,39 @@ export default function ResultadosModal({ isOpen, onClose }) {
   useEffect(() => {
     if (isOpen) {
       loadData();
-      const config = obtenerConfiguracionCronometro();
-      setTimerEnabled(config.enabled);
-      setTimerMinutes(Math.floor(config.seconds / 60));
-      setTimerSeconds(config.seconds % 60);
     }
   }, [isOpen, loadData]);
 
-  function saveTimerConfig() {
+  async function saveTimerConfig() {
     const seconds = Math.max(1, Number(timerMinutes || 0) * 60 + Number(timerSeconds || 0));
-    guardarConfiguracionCronometro({ enabled: timerEnabled, seconds });
-    setNotice(`Cronómetro ${timerEnabled ? 'activado' : 'desactivado'}${timerEnabled ? ` · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}` : ''}.`);
     setError('');
+    setTimerSaving(true);
+    try {
+      const snapshot = await apiRequest('/api/v1/competition/combate-actual/cronometro', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: timerEnabled, duration_seconds: seconds, direction: timerDirection }),
+      });
+      setCombat(snapshot);
+      combatRef.current = snapshot;
+      setNotice(`Cronómetro ${timerEnabled ? 'activado' : 'desactivado'}${timerEnabled ? ` · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · ${timerDirection === 'UP' ? 'progresivo' : 'regresivo'}` : ''}.`);
+    } catch (err) {
+      setError(err.message || 'No se pudo guardar la configuración del cronómetro.');
+    } finally { setTimerSaving(false); }
+  }
+
+  async function controlTimer(action) {
+    setError('');
+    setTimerSaving(true);
+    try {
+      const snapshot = await apiRequest(`/api/v1/competition/combate-actual/cronometro/${action}`, {
+        method: 'POST',
+      });
+      setCombat(snapshot);
+      combatRef.current = snapshot;
+      setNotice(`Cronómetro ${action === 'start' ? 'iniciado' : action === 'pause' ? 'pausado' : 'reiniciado'} y sincronizado.`);
+    } catch (err) {
+      setError(err.message || 'No se pudo controlar el cronómetro.');
+    } finally { setTimerSaving(false); }
   }
 
   const activatePair = useCallback(async (leftKey, rightKey) => {
@@ -245,8 +274,17 @@ export default function ResultadosModal({ isOpen, onClose }) {
               onChange={(event) => setTimerMinutes(Math.min(99, Math.max(0, Number(event.target.value))))} /></label>
             <label className="timer-admin-field">Segundos<input type="number" min="0" max="59" value={timerSeconds} disabled={!timerEnabled}
               onChange={(event) => setTimerSeconds(Math.min(59, Math.max(0, Number(event.target.value))))} /></label>
-            <button type="button" className="btn-modal-secondary" onClick={saveTimerConfig}>Aplicar tiempo</button>
-            <small>Se aplica en las pantallas de resultados abiertas en este navegador.</small>
+            <label className="timer-admin-field">Dirección<select value={timerDirection} disabled={!timerEnabled}
+              onChange={(event) => setTimerDirection(event.target.value)}>
+              <option value="DOWN">Cuenta regresiva</option><option value="UP">Cuenta progresiva</option>
+            </select></label>
+            <button type="button" className="btn-modal-secondary" onClick={saveTimerConfig} disabled={timerSaving || !hasCombat}>Aplicar tiempo</button>
+            <div className="timer-admin-actions">
+              <button type="button" className="btn-modal-secondary" onClick={() => controlTimer('start')} disabled={timerSaving || !hasCombat || !combat?.cronometro?.enabled || ['RUNNING', 'FINISHED'].includes(combat?.cronometro?.status)}>Iniciar / reanudar</button>
+              <button type="button" className="btn-modal-secondary" onClick={() => controlTimer('pause')} disabled={timerSaving || !hasCombat || combat?.cronometro?.status !== 'RUNNING'}>Pausar</button>
+              <button type="button" className="btn-modal-secondary" onClick={() => controlTimer('reset')} disabled={timerSaving || !hasCombat}>Reiniciar</button>
+            </div>
+            <small>Al poner el combate en marcha, el cronómetro habilitado comienza automáticamente. El tiempo se guarda y sincroniza con las pantallas.</small>
           </section>
           <div className="competitors-duel-form">
             <section className="corner-form-card red-corner-form">

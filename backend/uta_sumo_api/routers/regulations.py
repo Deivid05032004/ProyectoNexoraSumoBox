@@ -1,17 +1,17 @@
 from datetime import date
+import hashlib
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
-from sqlalchemy import text
+from sqlalchemy import LargeBinary, bindparam, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import MAX_REGULATION_BYTES
 from app.core.pagination import apply_pagination_headers
 from app.dependencies.auth import require_roles
+from app.core.crypto import decrypt_bytes, encrypt_bytes
 from app.schemas.regulation import RegulationUpdate
-from app.services.regulation_storage import (
-    InvalidRegulationPdf, delete_pdf, read_pdf, safe_filename, validate_pdf, write_pdf,
-)
+from app.services.regulation_storage import InvalidRegulationPdf, safe_filename, validate_pdf
 from database import get_db
 
 router = APIRouter(tags=["Reglamentos"])
@@ -109,7 +109,7 @@ def list_public_regulations(event_id: int, response: Response,
 @router.get("/api/v1/regulations/{regulation_id}/file")
 def download_public_regulation(regulation_id: int, db: Session = Depends(get_db)):
     row = db.execute(text("""
-        SELECT StorageKey,Title,VersionNumber FROM dbo.EventRegulations d
+        SELECT FileContent,Sha256,FileSizeBytes,VersionNumber FROM dbo.EventRegulations d
         JOIN dbo.Events e ON e.EventId=d.EventId
         WHERE d.RegulationId=:id AND d.StatusCode='PUBLISHED' AND e.IsActive=1
           AND d.EffectiveFrom<=CONVERT(date,GETDATE())
@@ -117,8 +117,12 @@ def download_public_regulation(regulation_id: int, db: Session = Depends(get_db)
     """), {"id": regulation_id}).mappings().first()
     if row is None:
         raise HTTPException(status_code=404, detail="Reglamento no disponible.")
-    content = read_pdf(row["StorageKey"])
-    if content is None:
+    try:
+        content = decrypt_bytes(row["FileContent"])
+    except Exception:
+        content = None
+    if (content is None or len(content) != row["FileSizeBytes"]
+            or hashlib.sha256(content).hexdigest() != row["Sha256"]):
         raise HTTPException(status_code=503, detail="No se pudo leer el reglamento.")
     return Response(content=content, media_type="application/pdf", headers={
         "Content-Disposition": f'inline; filename="reglamento-{regulation_id}-v{row["VersionNumber"]}.pdf"',
@@ -192,7 +196,6 @@ async def upload_regulation(event_id: int,
     except InvalidRegulationPdf as exc:
         raise HTTPException(status_code=415, detail=str(exc))
 
-    storage_key = write_pdf(content)
     try:
         version = db.execute(text("""
             SELECT ISNULL(MAX(VersionNumber),0)+1 FROM dbo.EventRegulations WITH (UPDLOCK,HOLDLOCK)
@@ -200,15 +203,16 @@ async def upload_regulation(event_id: int,
         """), {"event": event_id, "category": category_id}).scalar_one()
         row = db.execute(text("""
             INSERT INTO dbo.EventRegulations
-              (EventId,CategoryId,Title,VersionNumber,OriginalFilename,StorageKey,MediaType,
-               FileSizeBytes,Sha256,StatusCode,EffectiveFrom,EffectiveUntil,UploadedByUserId)
+              (EventId,CategoryId,Title,VersionNumber,OriginalFilename,MediaType,
+               FileSizeBytes,Sha256,StatusCode,EffectiveFrom,EffectiveUntil,UploadedByUserId,FileContent)
             OUTPUT INSERTED.RegulationId
-            VALUES(:event,:category,:title,:version,:filename,:key,'application/pdf',
-                   :size,:sha256,'DRAFT',:starts,:until,:actor)
-        """), {"event": event_id, "category": category_id, "title": title,
-              "version": version, "filename": safe_filename(file.filename), "key": storage_key,
-              "size": len(content), "sha256": digest, "starts": starts,
-              "until": effective_until, "actor": user["user_id"]}).scalar_one()
+            VALUES(:event,:category,:title,:version,:filename,'application/pdf',
+                   :size,:sha256,'DRAFT',:starts,:until,:actor,:content)
+        """).bindparams(bindparam("content", type_=LargeBinary)),
+            {"event": event_id, "category": category_id, "title": title,
+             "version": version, "filename": safe_filename(file.filename),
+             "size": len(content), "sha256": digest, "starts": starts,
+             "until": effective_until, "actor": user["user_id"], "content": encrypt_bytes(content)}).scalar_one()
         db.execute(text("""
             INSERT INTO dbo.EventRegulationHistory(RegulationId,ActorUserId,ActionCode,PreviousStatus,NewStatus)
             VALUES(:id,:actor,'CREATED',NULL,'DRAFT')
@@ -216,11 +220,9 @@ async def upload_regulation(event_id: int,
         db.commit()
     except IntegrityError:
         db.rollback()
-        delete_pdf(storage_key)
         raise HTTPException(status_code=409, detail="No se pudo guardar la versión del reglamento.")
     except Exception:
         db.rollback()
-        delete_pdf(storage_key)
         raise
     result = _regulation_row(db, row)
     return dict(result)
