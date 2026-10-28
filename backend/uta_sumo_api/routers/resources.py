@@ -22,15 +22,18 @@ def _name_conflict(resource_type: str, field: str):
     })
 
 
-def _name_exists(db: Session, resource_type: str, name: str, *, exclude_id: int | None = None) -> bool:
+def _name_exists(db: Session, resource_type: str, name: str, *, exclude_id: int | None = None,
+                 team_id: int | None = None) -> bool:
     if resource_type == "team":
         sql = "SELECT TOP (1) 1 FROM dbo.Teams WHERE NameLookupHash=:hash AND (:exclude_id IS NULL OR TeamId<>:exclude_id)"
     elif resource_type == "robot":
-        sql = "SELECT TOP (1) 1 FROM dbo.Robots WHERE NameLookupHash=:hash AND (:exclude_id IS NULL OR RobotId<>:exclude_id)"
+        if team_id is None:
+            raise ValueError("Se requiere el equipo para comprobar el nombre del robot.")
+        sql = "SELECT TOP (1) 1 FROM dbo.Robots WHERE TeamId=:team_id AND NameLookupHash=:hash AND (:exclude_id IS NULL OR RobotId<>:exclude_id)"
     else:
         raise ValueError("Tipo de recurso inválido.")
     return db.execute(text(sql), {"hash": resource_name_lookup_hash(name, resource_type),
-                                  "exclude_id": exclude_id}).first() is not None
+                                  "exclude_id": exclude_id, "team_id": team_id}).first() is not None
 
 
 @router.get("/teams")
@@ -164,7 +167,7 @@ def list_robots(response: Response, page: int = Query(1, ge=1, le=1_000_000), li
                        {"owner": user["user_id"]}).scalar_one()
     rows = db.execute(text(f"""
         SELECT RobotId AS id, Name AS name, RobotDescription AS description,
-               OwnerUserId AS owner_user_id FROM dbo.Robots {where}
+               TeamId AS team_id, OwnerUserId AS owner_user_id FROM dbo.Robots {where}
         ORDER BY RobotId DESC OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
     """), {"owner": user["user_id"], "offset": (page-1)*limit, "limit": limit}).mappings().all()
     apply_pagination_headers(response, total=int(total), page=page, limit=limit)
@@ -175,7 +178,7 @@ def list_robots(response: Response, page: int = Query(1, ge=1, le=1_000_000), li
 def get_robot(robot_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT RobotId AS id, Name AS name, RobotDescription AS description,
-               OwnerUserId AS owner_user_id FROM dbo.Robots
+               TeamId AS team_id, OwnerUserId AS owner_user_id FROM dbo.Robots
         WHERE RobotId=:id AND (:admin=1 OR OwnerUserId=:owner)
     """), {"id": robot_id, "admin": user["role"] in ("ADMIN", "EVENT_MANAGER"),
           "owner": user["user_id"]}).mappings().first()
@@ -189,17 +192,28 @@ def create_robot(payload: RobotInput, user=Depends(require_roles("PARTICIPANT", 
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="El nombre del robot no puede estar vacío.")
-    if _name_exists(db, "robot", name):
+    if payload.team_id is None:
+        raise HTTPException(status_code=422, detail="Selecciona el equipo al que pertenece el robot.")
+    team = db.execute(text("""
+        SELECT TeamId AS id FROM dbo.Teams WHERE TeamId=:id
+          AND (:admin=1 OR OwnerUserId=:owner)
+    """), {"id": payload.team_id, "admin": user["role"] == "ADMIN",
+          "owner": user["user_id"]}).scalar_one_or_none()
+    if team is None:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado o no pertenece a tu cuenta.")
+    if _name_exists(db, "robot", name, team_id=payload.team_id):
         raise _name_conflict("robot", "robotName")
     owner = user["user_id"] if user["role"] == "PARTICIPANT" else None
     try:
         row = db.execute(text("""
-            INSERT INTO dbo.Robots (Name, NameLookupHash, RobotDescription, OwnerUserId)
+            INSERT INTO dbo.Robots (Name, NameLookupHash, RobotDescription, TeamId, OwnerUserId)
             OUTPUT INSERTED.RobotId AS id, INSERTED.Name AS name,
-              INSERTED.RobotDescription AS description, INSERTED.OwnerUserId AS owner_user_id
-            VALUES (:name,:name_hash,:description,:owner)
+              INSERTED.RobotDescription AS description, INSERTED.TeamId AS team_id,
+              INSERTED.OwnerUserId AS owner_user_id
+            VALUES (:name,:name_hash,:description,:team_id,:owner)
         """), {"name": encrypt_text(name), "name_hash": resource_name_lookup_hash(name, "robot"),
               "description": encrypt_text(payload.robot_description),
+              "team_id": payload.team_id,
               "owner": owner}).mappings().one()
         db.commit()
     except IntegrityError:
@@ -213,13 +227,21 @@ def update_robot(robot_id: int, payload: RobotInput, user=Depends(require_roles(
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="El nombre del robot no puede estar vacío.")
-    if _name_exists(db, "robot", name, exclude_id=robot_id):
+    existing_team_id = db.execute(text("""
+        SELECT TeamId FROM dbo.Robots WHERE RobotId=:id AND (:admin=1 OR OwnerUserId=:owner)
+    """), {"id": robot_id, "admin": user["role"] == "ADMIN",
+          "owner": user["user_id"]}).scalar_one_or_none()
+    if existing_team_id is None:
+        raise HTTPException(status_code=404, detail="Robot no encontrado.")
+    if payload.team_id is not None and payload.team_id != existing_team_id:
+        raise HTTPException(status_code=409, detail="No se puede cambiar el equipo de un robot ya creado.")
+    if _name_exists(db, "robot", name, exclude_id=robot_id, team_id=existing_team_id):
         raise _name_conflict("robot", "robotName")
     try:
         row = db.execute(text("""
             UPDATE dbo.Robots SET Name=:name, NameLookupHash=:name_hash, RobotDescription=:description
             OUTPUT INSERTED.RobotId AS id, INSERTED.Name AS name,
-              INSERTED.RobotDescription AS description
+              INSERTED.RobotDescription AS description, INSERTED.TeamId AS team_id
             WHERE RobotId=:id AND (:admin=1 OR OwnerUserId=:owner)
         """), {"id": robot_id, "name": encrypt_text(name),
               "name_hash": resource_name_lookup_hash(name, "robot"),
@@ -239,7 +261,7 @@ def update_robot(robot_id: int, payload: RobotInput, user=Depends(require_roles(
 def create_registration_resources(payload: RegistrationResourcesInput,
                                   user=Depends(require_roles("PARTICIPANT")),
                                   db: Session = Depends(get_db)):
-    """Atomically create unique team and robot names used by a new registration."""
+    """Atomically create a globally unique team and a robot owned by that team."""
     team_name, robot_name = payload.team_name.strip(), payload.robot_name.strip()
     if not team_name:
         raise HTTPException(status_code=422, detail="El nombre del equipo no puede estar vacío.")
@@ -249,8 +271,6 @@ def create_registration_resources(payload: RegistrationResourcesInput,
     robot_hash = resource_name_lookup_hash(robot_name, "robot")
     if _name_exists(db, "team", team_name):
         raise _name_conflict("team", "teamName")
-    if _name_exists(db, "robot", robot_name):
-        raise _name_conflict("robot", "robotName")
     institution = db.execute(text("""
         SELECT InstitutionId FROM dbo.Participants WHERE UserId=:user_id
     """), {"user_id": user["user_id"]}).scalar_one_or_none()
@@ -269,19 +289,18 @@ def create_registration_resources(payload: RegistrationResourcesInput,
               "institution": payload.institution_id, "phone": encrypt_text(payload.contact_phone),
               "owner": user["user_id"]}).mappings().one()
         robot = db.execute(text("""
-            INSERT INTO dbo.Robots(Name,NameLookupHash,RobotDescription,OwnerUserId)
+            INSERT INTO dbo.Robots(Name,NameLookupHash,RobotDescription,TeamId,OwnerUserId)
             OUTPUT INSERTED.RobotId AS id,INSERTED.Name AS name,INSERTED.RobotDescription AS description,
-              INSERTED.OwnerUserId AS owner_user_id
-            VALUES(:name,:name_hash,:description,:owner)
+              INSERTED.TeamId AS team_id,INSERTED.OwnerUserId AS owner_user_id
+            VALUES(:name,:name_hash,:description,:team_id,:owner)
         """), {"name": encrypt_text(robot_name), "name_hash": robot_hash,
-              "description": encrypt_text(payload.robot_description), "owner": user["user_id"]}).mappings().one()
+              "description": encrypt_text(payload.robot_description), "team_id": team["id"],
+              "owner": user["user_id"]}).mappings().one()
         db.commit()
     except IntegrityError:
         db.rollback()
         if _name_exists(db, "team", team_name):
             raise _name_conflict("team", "teamName")
-        if _name_exists(db, "robot", robot_name):
-            raise _name_conflict("robot", "robotName")
         raise HTTPException(status_code=409, detail="No se pudieron guardar los nombres; vuelve a intentarlo.")
     return {"team": _decode_team(dict(team)), "robot": _decode_robot(dict(robot))}
 

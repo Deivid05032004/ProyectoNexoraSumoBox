@@ -305,7 +305,7 @@ export default function AdminDashboard() {
               <span className="admin-sidebar-icon"><NavIcon name="registration" /></span> Inscripciones
             </button>
             <button type="button" className="admin-sidebar-link" onClick={() => setModalResultadosAbierto(true)}>
-              <span className="admin-sidebar-icon"><NavIcon name="competition" /></span> Torneo y marcador
+              <span className="admin-sidebar-icon"><NavIcon name="competition" /></span> Grupos y marcador
             </button>
             {user?.role === 'ADMIN' && <button type="button" className="admin-sidebar-link" onClick={() => setCrearFormulario(true)}>
               <span className="admin-sidebar-icon"><NavIcon name="form" /></span> Formularios

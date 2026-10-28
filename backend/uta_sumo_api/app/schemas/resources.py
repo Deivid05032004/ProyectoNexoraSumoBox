@@ -149,6 +149,7 @@ class TeamUpdate(StrictModel):
 
 class RobotInput(StrictModel):
     name: str = Field(min_length=1, max_length=120)
+    team_id: int | None = Field(default=None, gt=0)
     robot_description: str | None = Field(default=None, max_length=500)
 
     @field_validator("name")

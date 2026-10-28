@@ -8,13 +8,14 @@ from time import sleep
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import main
 import routers.competition as competition_router
 import routers.payments as payments_router
+import routers.registrations as registrations_router
 import routers.auth as auth_router
 import routers.admin as admin_router
 import app.services.registration_delivery as registration_delivery
@@ -63,6 +64,8 @@ def sql_api(monkeypatch, tmp_path):
 
     main.app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(payments_router, "RECEIPT_STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(registrations_router, "RECEIPT_STORAGE_DIR", tmp_path)
+    monkeypatch.setattr(registration_delivery, "RECEIPT_STORAGE_DIR", tmp_path)
     monkeypatch.setattr(auth_router, "EMAIL_CHECK_DELIVERABILITY", False)
     monkeypatch.setattr(admin_router, "EMAIL_CHECK_DELIVERABILITY", False)
     # SQL integration tests must never use a developer's configured SMTP
@@ -120,7 +123,8 @@ def _owned_resources(ctx, participant_token):
     })
     assert team.status_code == 201, team.text
     robot = client.post("/api/v1/robots", headers=participant_token, json={
-        "name": f"Robot-{uuid.uuid4().hex[:8]}", "robot_description": "test robot",
+        "name": f"Robot-{uuid.uuid4().hex[:8]}", "team_id": team.json()["id"],
+        "robot_description": "test robot",
     })
     assert robot.status_code == 201, robot.text
     return profile, team.json(), robot.json()
@@ -302,6 +306,592 @@ def test_three_member_roster_orders_and_mine_queries_persist_without_adding_owne
     assert client.get("/api/v1/payments/my", headers=other_token).json() == []
     assert client.get(f"/api/v1/registrations/{detail['id']}", headers=other_token).status_code == 404
     assert client.get(f"/api/v1/payments/{detail['payment_id']}", headers=other_token).status_code == 404
+
+
+def test_participant_form_resources_then_registration_two_participants_one_coach(sql_api):
+    """Cover the same two-request flow used by the participant form."""
+    ctx = sql_api
+    client = ctx["client"]
+    participant = _register(ctx, f"form_flow_{uuid.uuid4().hex[:8]}")
+    token = {"Authorization": f"Bearer {participant['access_token']}"}
+    profile = client.get("/api/v1/participants/me", headers=token).json()
+
+    resources = client.post("/api/v1/registration-resources", headers=token, json={
+        "team_name": f"Team-{uuid.uuid4().hex[:8]}",
+        "robot_name": f"Robot-{uuid.uuid4().hex[:8]}",
+        "institution_id": profile["institution_id"],
+        "contact_phone": profile["mobile_phone"],
+        "robot_description": None,
+    })
+    assert resources.status_code == 201, resources.text
+
+    registration = client.post("/api/v1/registrations", headers=token, json={
+        "event_id": ctx["event_id"],
+        "category_id": ctx["category_id"],
+        "team_id": resources.json()["team"]["id"],
+        "robot_id": resources.json()["robot"]["id"],
+        "participants": [
+            {"role": "PARTICIPANT", "first_name": "Participante", "last_name": "Uno",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991000001"},
+            {"role": "PARTICIPANT", "first_name": "Participante", "last_name": "Dos",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991000002"},
+            {"role": "COACH", "first_name": "Coach", "last_name": "Prueba",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991000003"},
+        ],
+        "custom_answers": {},
+        "notes": None,
+    })
+    assert registration.status_code == 201, registration.text
+    assert registration.json()["status"] == "PAYMENT_PENDING"
+    assert Decimal(registration.json()["amount"]) == Decimal("12.50")
+    assert [item["role"] for item in registration.json()["participants"]] == [
+        "PARTICIPANT", "PARTICIPANT", "COACH"]
+
+
+def test_team_names_are_global_unique_but_robot_names_are_unique_per_team(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    participant = _register(ctx, f"resource_names_{uuid.uuid4().hex[:8]}")
+    token = {"Authorization": f"Bearer {participant['access_token']}"}
+    profile = client.get("/api/v1/participants/me", headers=token).json()
+    team_name = f"Shared-Team-{uuid.uuid4().hex[:8]}"
+    robot_name = f"Shared-Robot-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "team_name": team_name, "robot_name": robot_name,
+        "institution_id": profile["institution_id"],
+        "contact_phone": profile["mobile_phone"], "robot_description": None,
+    }
+    first = client.post("/api/v1/registration-resources", headers=token, json=payload)
+    assert first.status_code == 201, first.text
+    second = client.post("/api/v1/registration-resources", headers=token,
+                         json={**payload, "team_name": f"Second-{uuid.uuid4().hex[:8]}"})
+    assert second.status_code == 201, second.text
+    assert first.json()["robot"]["name"] == second.json()["robot"]["name"] == robot_name
+    assert first.json()["robot"]["team_id"] != second.json()["robot"]["team_id"]
+
+    wrong_team_registration = client.post("/api/v1/registrations", headers=token, json={
+        "event_id": ctx["event_id"], "category_id": ctx["category_id"],
+        "team_id": first.json()["team"]["id"], "robot_id": second.json()["robot"]["id"],
+        "participants": [{"participant_id": profile["id"], "role": "PARTICIPANT"}],
+    })
+    assert wrong_team_registration.status_code == 422
+    assert "no pertenece al equipo" in wrong_team_registration.json()["detail"]
+
+    duplicate_team = client.post("/api/v1/registration-resources", headers=token, json={
+        **payload, "robot_name": f"Other-{uuid.uuid4().hex[:8]}"})
+    assert duplicate_team.status_code == 409
+    assert duplicate_team.json()["detail"]["field"] == "teamName"
+
+    same_team_robot = client.post("/api/v1/robots", headers=token, json={
+        "name": robot_name, "team_id": first.json()["team"]["id"],
+        "robot_description": None,
+    })
+    assert same_team_robot.status_code == 409
+    assert same_team_robot.json()["detail"]["field"] == "robotName"
+
+
+def test_official_2026_event_registration_flow_uses_database_configuration(sql_api):
+    """Exercise the participant flow against the real official event/category/tariff rows.
+
+    The SQL fixture wraps the entire test in an outer transaction, so the test
+    validates order generation without leaving demo registration data behind.
+    """
+    ctx = sql_api
+    client = ctx["client"]
+    event = ctx["db"].execute(text("""SELECT e.EventId AS event_id,ec.CategoryId AS category_id,
+        t.Amount AS amount FROM dbo.Events e
+        JOIN dbo.EventCategories ec ON ec.EventId=e.EventId AND ec.IsActive=1
+        JOIN dbo.Categories c ON c.CategoryId=ec.CategoryId AND c.IsActive=1
+        JOIN dbo.Tariffs t ON t.EventId=e.EventId AND t.CategoryId=ec.CategoryId AND t.IsActive=1
+          AND t.ValidFrom<=CONVERT(date,GETDATE())
+          AND (t.ValidUntil IS NULL OR t.ValidUntil>=CONVERT(date,GETDATE()))
+        WHERE e.Name=N'UTA SUMO ROBOTICS CUP 2026' AND e.EditionYear=2026
+          AND e.IsActive=1 AND c.Name=N'MINI SUMO AMATEUR RC'
+          AND ec.MinParticipants=2 AND ec.MaxParticipants=2 AND ec.MinCoaches=1 AND ec.MaxCoaches=1
+          AND (e.RegistrationStart IS NULL OR e.RegistrationStart<=CONVERT(date,GETDATE()))
+          AND (e.RegistrationEnd IS NULL OR e.RegistrationEnd>=CONVERT(date,GETDATE()))
+        ORDER BY t.ValidFrom DESC,t.TariffId DESC""")).mappings().first()
+    assert event is not None, "El evento oficial no tiene una categoría y tarifa disponibles."
+    public_config = client.get(f"/api/v1/events/{event['event_id']}/registration-config")
+    assert public_config.status_code == 200, public_config.text
+    assert public_config.json()["registration_open"] is True
+    assert public_config.json()["is_enabled"] is True
+
+    participant = _register(ctx, f"official_flow_{uuid.uuid4().hex[:8]}")
+    token = {"Authorization": f"Bearer {participant['access_token']}"}
+    profile = client.get("/api/v1/participants/me", headers=token).json()
+    resources = client.post("/api/v1/registration-resources", headers=token, json={
+        "team_name": f"QA-Team-{uuid.uuid4().hex[:8]}",
+        "robot_name": f"QA-Robot-{uuid.uuid4().hex[:8]}",
+        "institution_id": profile["institution_id"],
+        "contact_phone": profile["mobile_phone"],
+        "robot_description": None,
+    })
+    assert resources.status_code == 201, resources.text
+
+    registration = client.post("/api/v1/registrations", headers=token, json={
+        "event_id": event["event_id"], "category_id": event["category_id"],
+        "team_id": resources.json()["team"]["id"],
+        "robot_id": resources.json()["robot"]["id"],
+        "participants": [
+            {"role": "PARTICIPANT", "first_name": "QA", "last_name": "Participante Uno",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991001001"},
+            {"role": "PARTICIPANT", "first_name": "QA", "last_name": "Participante Dos",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991001002"},
+            {"role": "COACH", "first_name": "QA", "last_name": "Coach",
+             "institution_id": ctx["institution_id"], "mobile_phone": "0991001003"},
+        ],
+        "custom_answers": {}, "notes": None,
+    })
+    assert registration.status_code == 201, registration.text
+    result = registration.json()
+    assert result["status"] == "PAYMENT_PENDING"
+    assert Decimal(result["amount"]) == Decimal("15.00")
+    assert result["payment_status"] == "PENDING"
+    assert result["receipt_url"] == f"/api/v1/registrations/{result['id']}/receipt"
+    assert result["email_delivery_status"] == "PENDING"
+    assert [item["role"] for item in result["participants"]] == [
+        "PARTICIPANT", "PARTICIPANT", "COACH"]
+    instruction = client.get(result["receipt_url"], headers=token)
+    assert instruction.status_code == 200
+    assert instruction.headers["content-type"].startswith("application/pdf")
+
+
+def test_tournament_groups_manage_only_approved_event_category_registrations(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    admin = _account(ctx, "ADMIN")
+    first_user = _register(ctx, f"group_first_{uuid.uuid4().hex[:8]}")
+    second_user = _register(ctx, f"group_second_{uuid.uuid4().hex[:8]}")
+    third_user = _register(ctx, f"group_third_{uuid.uuid4().hex[:8]}")
+    first_registration = _create_registration(ctx, {"Authorization": f"Bearer {first_user['access_token']}"})
+    second_registration = _create_registration(ctx, {"Authorization": f"Bearer {second_user['access_token']}"})
+    third_registration = _create_registration(ctx, {"Authorization": f"Bearer {third_user['access_token']}"})
+    approved_status = ctx["db"].execute(text(
+        "SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='APPROVED'"
+    )).scalar_one()
+    ctx["db"].execute(text("""
+      UPDATE dbo.Registrations SET StatusId=:status
+      WHERE RegistrationId IN (:first,:second,:third)
+    """), {"status": approved_status, "first": first_registration["id"],
+          "second": second_registration["id"], "third": third_registration["id"]})
+    ctx["db"].commit()
+
+    base = (f"/api/v1/admin/events/{ctx['event_id']}/categories/"
+            f"{ctx['category_id']}/tournament-groups")
+    assert client.get(base).status_code == 401
+    created = client.post(base, headers=admin["headers"], json={
+        "name": "Grupo Rojo", "code": "rojo-1", "max_teams": 2,
+    })
+    assert created.status_code == 201, created.text
+    first_group = created.json()
+    assert first_group["code"] == "ROJO-1" and first_group["assigned_count"] == 0
+    second = client.post(base, headers=admin["headers"], json={
+        "name": "Grupo Azul", "code": "AZUL", "max_teams": 1,
+    })
+    assert second.status_code == 201, second.text
+    second_group = second.json()
+    edited = client.patch(f"{base}/{first_group['id']}", headers=admin["headers"], json={
+        "name": "Grupo Rojo A",
+    })
+    assert edited.status_code == 200 and edited.json()["name"] == "Grupo Rojo A"
+
+    available = client.get(f"{base}/eligible-registrations?page=1&limit=5", headers=admin["headers"])
+    assert available.status_code == 200
+    assert {item["registration_id"] for item in available.json()["items"]} == {
+        first_registration["id"], second_registration["id"], third_registration["id"]
+    }
+    invalid = client.post(f"{base}/{first_group['id']}/registrations", headers=admin["headers"], json={
+        "registration_id": 999999,
+    })
+    assert invalid.status_code == 422
+
+    assigned = client.post(f"{base}/{first_group['id']}/registrations", headers=admin["headers"], json={
+        "registration_id": first_registration["id"],
+    })
+    assert assigned.status_code == 201, assigned.text
+    registered_team_id = ctx["db"].execute(text(
+        "SELECT TeamId FROM dbo.Registrations WHERE RegistrationId=:id"
+    ), {"id": first_registration["id"]}).scalar_one()
+    group_view = client.get(f"{base}/{first_group['id']}/participants", headers=admin["headers"])
+    assert group_view.status_code == 200
+    assert group_view.json()["teams"][0]["team_id"] == registered_team_id
+    assert len(group_view.json()["participants"]) == 1
+    assert group_view.json()["participants"][0]["role"] == "PARTICIPANT"
+
+    second_assigned = client.post(f"{base}/{first_group['id']}/registrations", headers=admin["headers"], json={
+        "registration_id": second_registration["id"],
+    })
+    assert second_assigned.status_code == 201, second_assigned.text
+    capacity_conflict = client.patch(f"{base}/{first_group['id']}", headers=admin["headers"], json={
+        "max_teams": 1,
+    })
+    assert capacity_conflict.status_code == 409
+
+    full = client.post(f"{base}/{first_group['id']}/registrations", headers=admin["headers"], json={
+        "registration_id": third_registration["id"],
+    })
+    assert full.status_code == 409
+    full = client.post(f"{base}/{first_group['id']}/registrations", headers=admin["headers"], json={
+        "registration_id": first_registration["id"],
+    })
+    assert full.status_code == 409  # An assignment cannot be duplicated in one group.
+    duplicate = client.post(f"{base}/{second_group['id']}/registrations", headers=admin["headers"], json={
+        "registration_id": first_registration["id"],
+    })
+    assert duplicate.status_code == 409
+    too_small = client.patch(f"{base}/{first_group['id']}", headers=admin["headers"], json={
+        "max_teams": 0,
+    })
+    assert too_small.status_code == 422
+
+    moved = client.put(
+        f"{base}/{second_group['id']}/registrations/{first_registration['id']}",
+        headers=admin["headers"],
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json() == {"moved": True, "registration_id": first_registration["id"],
+                            "from_group_id": first_group["id"], "to_group_id": second_group["id"]}
+    assert client.get(f"{base}/{second_group['id']}/participants", headers=admin["headers"]).json()["teams"][0]["registration_id"] == first_registration["id"]
+    removed = client.delete(
+        f"{base}/{second_group['id']}/registrations/{first_registration['id']}",
+        headers=admin["headers"],
+    )
+    assert removed.status_code == 204
+    deleted = client.delete(f"{base}/{second_group['id']}", headers=admin["headers"])
+    assert deleted.status_code == 204
+
+    # A configured GROUP phase is still editable before the start command. Once
+    # the state advances, all assignment and structure mutations are rejected.
+    ctx["db"].execute(text("""
+      INSERT dbo.TournamentPhaseState(EventId,CategoryId,CurrentPhase,CreatedByUserId,UpdatedByUserId)
+      VALUES(:event,:category,'SEMIFINAL',:actor,:actor)
+    """), {"event": ctx["event_id"], "category": ctx["category_id"], "actor": admin["user_id"]})
+    ctx["db"].commit()
+    locked = client.get(base, headers=admin["headers"])
+    assert locked.status_code == 200 and locked.json()["locked"] is True
+    no_edit = client.patch(f"{base}/{first_group['id']}", headers=admin["headers"], json={"name": "Otro"})
+    assert no_edit.status_code == 409
+    no_delete = client.delete(f"{base}/{first_group['id']}", headers=admin["headers"])
+    assert no_delete.status_code == 409
+
+
+def test_tournament_calendar_uses_saved_group_assignments(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    admin = _account(ctx, "ADMIN")
+    group_base = (f"/api/v1/admin/events/{ctx['event_id']}/categories/"
+                  f"{ctx['category_id']}/tournament-groups")
+    groups = {}
+    for code in "ABCD":
+        response = client.post(group_base, headers=admin["headers"], json={
+            "name": f"Grupo {code}", "code": code, "max_teams": 2,
+        })
+        assert response.status_code == 201, response.text
+        groups[code] = response.json()["id"]
+
+    registrations = []
+    for index in range(8):
+        participant = _register(ctx, f"bracket_{uuid.uuid4().hex[:10]}")
+        registration = _create_registration(ctx, {
+            "Authorization": f"Bearer {participant['access_token']}"})
+        registrations.append(registration["id"])
+    approved_status = ctx["db"].execute(text(
+        "SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='APPROVED'"
+    )).scalar_one()
+    ctx["db"].execute(text("UPDATE dbo.Registrations SET StatusId=:status WHERE RegistrationId IN :ids")
+        .bindparams(bindparam("ids", expanding=True)),
+        {"status": approved_status, "ids": registrations})
+    ctx["db"].commit()
+
+    for index, registration_id in enumerate(registrations):
+        code = "ABCD"[index // 2]
+        assigned = client.post(f"{group_base}/{groups[code]}/registrations",
+            headers=admin["headers"], json={"registration_id": registration_id})
+        assert assigned.status_code == 201, assigned.text
+
+    built = client.post(f"/api/v1/events/{ctx['event_id']}/tournament/from-groups",
+        headers=admin["headers"], json={"category_id": ctx["category_id"]})
+    assert built.status_code == 200, built.text
+    tournament = built.json()
+    assert tournament["phase"] == "GROUP"
+    assert {code: len(rows) for code, rows in tournament["groups"].items()} == {
+        "A": 2, "B": 2, "C": 2, "D": 2,
+    }
+    group_matches = [match for match in tournament["matches"] if match["stage_code"] == "GROUP"]
+    assert len(group_matches) == 4
+    assert {match["group_code"] for match in group_matches} == set("ABCD")
+    assert all(match["status"] == "SCHEDULED" and match["group_name"] for match in group_matches)
+    relation_count = ctx["db"].execute(text("""
+      SELECT COUNT(*) FROM dbo.CompetitionMatches m
+      JOIN dbo.CompetitionRounds r ON r.RoundId=m.RoundId
+      WHERE m.TournamentGroupId IS NOT NULL AND m.StageCode='GROUP'
+        AND r.EventId=:event AND r.CategoryId=:category
+    """), {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one()
+    assert relation_count == 4
+
+    def finish_stage(stage):
+        ctx["db"].execute(text("""
+          UPDATE m SET MatchStatus='FINISHED',WinnerTeamId=left_team.TeamId,LoserTeamId=right_team.TeamId
+          FROM dbo.CompetitionMatches m
+          JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+          JOIN dbo.CompetitionMatchTeams left_team ON left_team.MatchId=m.MatchId AND left_team.TeamPosition=1
+          JOIN dbo.CompetitionMatchTeams right_team ON right_team.MatchId=m.MatchId AND right_team.TeamPosition=2
+          WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode=:stage
+        """), {"event": ctx["event_id"], "category": ctx["category_id"], "stage": stage})
+        competition_router._progress_tournament(
+            ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
+        ctx["db"].commit()
+
+    finish_stage("GROUP")
+    after_groups = client.get(
+        f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
+        headers=admin["headers"],
+    ).json()
+    assert after_groups["phase"] == "QUARTERFINAL"
+    assert sum(board["match"] is not None for board in after_groups["boards"]) == 4
+    finish_stage("QUARTERFINAL")
+    after_quarters = client.get(
+        f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
+        headers=admin["headers"],
+    ).json()
+    assert after_quarters["phase"] == "SEMIFINAL"
+    assert sum(board["match"] is not None for board in after_quarters["boards"]) == 2
+    finish_stage("SEMIFINAL")
+    assert ctx["db"].execute(text("""SELECT CurrentPhase FROM dbo.TournamentPhaseState
+      WHERE EventId=:event AND CategoryId=:category"""),
+      {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one() == "THIRD_PLACE"
+    finish_stage("THIRD_PLACE")
+    final = ctx["db"].execute(text("""SELECT m.ScoreToWin FROM dbo.CompetitionMatches m
+      JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+      WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode='FINAL'"""),
+      {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one()
+    assert final == 3
+    finish_stage("FINAL")
+    assert ctx["db"].execute(text("""SELECT CurrentPhase FROM dbo.TournamentPhaseState
+      WHERE EventId=:event AND CategoryId=:category"""),
+      {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one() == "FINISHED"
+
+
+def test_custom_groups_and_non_power_of_two_bracket_progress(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    admin = _account(ctx, "ADMIN")
+    group_base = (f"/api/v1/admin/events/{ctx['event_id']}/categories/"
+                  f"{ctx['category_id']}/tournament-groups")
+    group_ids = {}
+    for code in ("NORTE", "SUR", "ESTE"):
+        created = client.post(group_base, headers=admin["headers"], json={
+            "name": f"Zona {code}", "code": code, "max_teams": 2,
+        })
+        assert created.status_code == 201, created.text
+        group_ids[code] = created.json()["id"]
+
+    registrations = []
+    for index in range(6):
+        participant = _register(ctx, f"flexbracket_{uuid.uuid4().hex[:10]}")
+        registrations.append(_create_registration(ctx, {
+            "Authorization": f"Bearer {participant['access_token']}"})["id"])
+    approved_status = ctx["db"].execute(text(
+        "SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='APPROVED'"
+    )).scalar_one()
+    ctx["db"].execute(text("UPDATE dbo.Registrations SET StatusId=:status WHERE RegistrationId IN :ids")
+        .bindparams(bindparam("ids", expanding=True)),
+        {"status": approved_status, "ids": registrations})
+    ctx["db"].commit()
+
+    for index, registration_id in enumerate(registrations):
+        code = ("NORTE", "SUR", "ESTE")[index // 2]
+        assigned = client.post(f"{group_base}/{group_ids[code]}/registrations",
+            headers=admin["headers"], json={"registration_id": registration_id})
+        assert assigned.status_code == 201, assigned.text
+
+    built = client.post(f"/api/v1/events/{ctx['event_id']}/tournament/from-groups",
+        headers=admin["headers"], json={"category_id": ctx["category_id"]})
+    assert built.status_code == 200, built.text
+    group_matches = [m for m in built.json()["matches"] if m["stage_code"] == "GROUP"]
+    assert len(group_matches) == 3  # One unique pair in each two-team group.
+    assert {m["group_code"] for m in group_matches} == {"NORTE", "SUR", "ESTE"}
+    pairs = [(m["group_code"], frozenset((m["team_id_a"], m["team_id_b"]))) for m in group_matches]
+    assert len(pairs) == len(set(pairs))
+
+    def finish_stage(stage):
+        ctx["db"].execute(text("""
+          UPDATE m SET MatchStatus='FINISHED',WinnerTeamId=left_team.TeamId,LoserTeamId=right_team.TeamId
+          FROM dbo.CompetitionMatches m
+          JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+          JOIN dbo.CompetitionMatchTeams left_team ON left_team.MatchId=m.MatchId AND left_team.TeamPosition=1
+          JOIN dbo.CompetitionMatchTeams right_team ON right_team.MatchId=m.MatchId AND right_team.TeamPosition=2
+          WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode=:stage
+        """), {"event": ctx["event_id"], "category": ctx["category_id"], "stage": stage})
+        competition_router._progress_tournament(
+            ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
+        ctx["db"].commit()
+
+    finish_stage("GROUP")
+    quarterfinals = client.get(f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
+        headers=admin["headers"]).json()
+    assert quarterfinals["phase"] == "QUARTERFINAL"
+    assert sum(board["match"] is not None for board in quarterfinals["boards"]) == 2
+    bye_count = ctx["db"].execute(text("""SELECT COUNT(*) FROM dbo.TournamentBracketByes
+      WHERE EventId=:event AND CategoryId=:category AND StageCode='QUARTERFINAL'"""),
+      {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one()
+    assert bye_count == 2
+    finish_stage("QUARTERFINAL")
+    semifinal = client.get(f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
+        headers=admin["headers"]).json()
+    assert semifinal["phase"] == "SEMIFINAL"
+    assert sum(board["match"] is not None for board in semifinal["boards"]) == 2
+
+
+def test_two_groups_progress_to_semifinals_then_third_place_and_one_final(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    admin = _account(ctx, "ADMIN")
+    group_base = (f"/api/v1/admin/events/{ctx['event_id']}/categories/"
+                  f"{ctx['category_id']}/tournament-groups")
+    groups = {}
+    for code in ("A", "B"):
+        response = client.post(group_base, headers=admin["headers"], json={
+            "name": f"Grupo {code}", "code": code, "max_teams": 2,
+        })
+        assert response.status_code == 201, response.text
+        groups[code] = response.json()["id"]
+    registration_ids = []
+    for index in range(4):
+        participant = _register(ctx, f"two_groups_{uuid.uuid4().hex[:10]}")
+        registration_ids.append(_create_registration(ctx, {
+            "Authorization": f"Bearer {participant['access_token']}"})["id"])
+    approved = ctx["db"].execute(text(
+        "SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='APPROVED'"
+    )).scalar_one()
+    ctx["db"].execute(text("UPDATE dbo.Registrations SET StatusId=:status WHERE RegistrationId IN :ids")
+        .bindparams(bindparam("ids", expanding=True)),
+        {"status": approved, "ids": registration_ids})
+    ctx["db"].commit()
+    for index, registration_id in enumerate(registration_ids):
+        code = "A" if index < 2 else "B"
+        assigned = client.post(f"{group_base}/{groups[code]}/registrations",
+            headers=admin["headers"], json={"registration_id": registration_id})
+        assert assigned.status_code == 201, assigned.text
+
+    created = client.post(f"/api/v1/events/{ctx['event_id']}/tournament/from-groups",
+        headers=admin["headers"], json={"category_id": ctx["category_id"]})
+    assert created.status_code == 200, created.text
+    assert created.json()["phase_progress"] == {
+        "stage": "GROUP", "total": 2, "finished": 0, "live": 0,
+        "scheduled": 2, "cancelled": 0, "remaining": 2, "complete": False,
+    }
+
+    def finish(stage):
+        ctx["db"].execute(text("""
+          UPDATE m SET MatchStatus='FINISHED',WinnerTeamId=left_team.TeamId,LoserTeamId=right_team.TeamId
+          FROM dbo.CompetitionMatches m
+          JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+          JOIN dbo.CompetitionMatchTeams left_team ON left_team.MatchId=m.MatchId AND left_team.TeamPosition=1
+          JOIN dbo.CompetitionMatchTeams right_team ON right_team.MatchId=m.MatchId AND right_team.TeamPosition=2
+          WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode=:stage
+        """), {"event": ctx["event_id"], "category": ctx["category_id"], "stage": stage})
+        competition_router._progress_tournament(
+            ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
+        ctx["db"].commit()
+
+    finish("GROUP")
+    semifinal = client.get(f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
+        headers=admin["headers"]).json()
+    assert semifinal["phase"] == "SEMIFINAL"
+    assert {match["stage_code"] for match in semifinal["matches"]} == {"GROUP", "SEMIFINAL"}
+
+    finish("SEMIFINAL")
+    assert ctx["db"].execute(text("""SELECT CurrentPhase FROM dbo.TournamentPhaseState
+      WHERE EventId=:event AND CategoryId=:category"""),
+      {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one() == "THIRD_PLACE"
+    finish("THIRD_PLACE")
+    final = client.get(f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
+        headers=admin["headers"]).json()
+    assert final["phase"] == "FINAL"
+    assert sum(match["stage_code"] == "FINAL" for match in final["matches"]) == 1
+    finish("FINAL")
+    completed = client.get(f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
+        headers=admin["headers"]).json()
+    assert completed["phase"] == "FINISHED"
+    assert completed["phase_progress"]["complete"] is True
+
+
+def test_staff_can_select_group_matches_without_crossing_groups_or_journeys(sql_api):
+    ctx = sql_api
+    client = ctx["client"]
+    admin = _account(ctx, "ADMIN")
+    group_base = (f"/api/v1/admin/events/{ctx['event_id']}/categories/"
+                  f"{ctx['category_id']}/tournament-groups")
+    group_ids = {}
+    for code in ("A", "B"):
+        created = client.post(group_base, headers=admin["headers"], json={
+            "name": f"Grupo {code}", "code": code, "max_teams": 3,
+        })
+        assert created.status_code == 201, created.text
+        group_ids[code] = created.json()["id"]
+    registrations = []
+    for index in range(6):
+        participant = _register(ctx, f"pickfight_{uuid.uuid4().hex[:10]}")
+        registrations.append(_create_registration(ctx, {
+            "Authorization": f"Bearer {participant['access_token']}"})["id"])
+    approved_status = ctx["db"].execute(text(
+        "SELECT StatusId FROM dbo.RegistrationStatuses WHERE Code='APPROVED'"
+    )).scalar_one()
+    ctx["db"].execute(text("UPDATE dbo.Registrations SET StatusId=:status WHERE RegistrationId IN :ids")
+        .bindparams(bindparam("ids", expanding=True)),
+        {"status": approved_status, "ids": registrations})
+    ctx["db"].commit()
+    for index, registration_id in enumerate(registrations):
+        code = "A" if index < 3 else "B"
+        assigned = client.post(f"{group_base}/{group_ids[code]}/registrations",
+            headers=admin["headers"], json={"registration_id": registration_id})
+        assert assigned.status_code == 201, assigned.text
+
+    built = client.post(f"/api/v1/events/{ctx['event_id']}/tournament/from-groups",
+        headers=admin["headers"], json={"category_id": ctx["category_id"]})
+    assert built.status_code == 200, built.text
+    matches = [match for match in built.json()["matches"] if match["stage_code"] == "GROUP"]
+    first_round = [match for match in matches if match["schedule_round"] == 1]
+    assert {match["group_code"] for match in first_round} == {"A", "B"}
+
+    start_path = f"/api/v1/events/{ctx['event_id']}/tournament/matches"
+    group_a_first = next(match for match in first_round if match["group_code"] == "A")
+    group_b_first = next(match for match in first_round if match["group_code"] == "B")
+    assert {match["dohyo_number"] for match in matches if match["group_code"] == "A"} == {1}
+    assert {match["dohyo_number"] for match in matches if match["group_code"] == "B"} == {2}
+    first = client.post(f"{start_path}/{group_a_first['match_id']}/start?category_id={ctx['category_id']}&dohyo_number=1",
+        headers=admin["headers"])
+    second = client.post(f"{start_path}/{group_b_first['match_id']}/start?category_id={ctx['category_id']}&dohyo_number=2",
+        headers=admin["headers"])
+    assert first.status_code == second.status_code == 200, (first.text, second.text)
+    assert {board["match"]["group_code"] for board in second.json()["boards"] if board["match"]} == {"A", "B"}
+
+    later_match = next(match for match in matches if match["group_code"] == group_a_first["group_code"]
+                       and match["schedule_round"] == 2)
+    blocked = client.post(f"{start_path}/{later_match['match_id']}/start?category_id={ctx['category_id']}&dohyo_number=3",
+        headers=admin["headers"])
+    assert blocked.status_code == 409
+
+    ctx["db"].execute(text("""
+      UPDATE dbo.CompetitionMatches SET MatchStatus='FINISHED',WinnerTeamId=:winner,LoserTeamId=:loser
+      WHERE MatchId=:match
+    """), {"winner": group_a_first["team_id_a"], "loser": group_a_first["team_id_b"],
+          "match": group_a_first["match_id"]})
+    ctx["db"].commit()
+    assert client.post(
+        f"{start_path}/{later_match['match_id']}/start?category_id={ctx['category_id']}&dohyo_number=3",
+        headers=admin["headers"],
+    ).status_code == 409
+    next_a = client.post(
+        f"{start_path}/{later_match['match_id']}/start?category_id={ctx['category_id']}&dohyo_number=1",
+        headers=admin["headers"],
+    )
+    assert next_a.status_code == 200, next_a.text
+    group_a_board = next(board for board in next_a.json()["boards"] if board["dohyo_number"] == 1)
+    assert group_a_board["match"]["group_code"] == "A"
+    assert group_a_board["match"]["match_id"] == later_match["match_id"]
 
 
 def test_event_category_roster_rules_are_configurable_and_enforced(sql_api):
@@ -569,7 +1159,7 @@ def test_payment_receipt_review_history_and_state_transitions(sql_api, monkeypat
                            headers=administrator["headers"],
                            json={"status": "APPROVED", "comments": "datos correctos"})
     assert approved.status_code == 200, approved.text
-    history = client.get(f"/api/v1/registrations/{registration['id']}/history", headers=token)
+    history = client.get(f"/api/v1/registrations/{registration['id']}/history?limit=10", headers=token)
     assert history.status_code == 200
     assert history.headers["x-total-count"] == "6"
     assert [entry["new_status"] for entry in history.json()] == ["PAYMENT_PENDING", "PAYMENT_REVIEW", "PAYMENT_PENDING", "PAYMENT_REVIEW", "PENDING", "APPROVED"]
@@ -1019,20 +1609,36 @@ def test_admin_event_forms_accounts_and_encrypted_registration_answers(sql_api):
     created=client.post("/api/v1/admin/events",headers=admin["headers"],json={
         "name":f"Managed-{uuid.uuid4().hex[:8]}","edition_year":date.today().year,
         "description":"Competencia de integración","venue":"Ambato",
-        "registration_start":"2020-01-01","registration_end":"2099-12-31",
+        "registration_start":"2026-01-01","registration_end":"2027-02-28",
         "starts_at":"2027-03-01T08:00:00","ends_at":"2027-03-01T18:00:00","is_active":True})
     assert created.status_code==201,created.text
     event_id=created.json()["id"]
+    blocked_schedule=client.patch(f"/api/v1/admin/events/{event_id}/status",headers=admin["headers"],json={"status":"SCHEDULED"})
+    assert blocked_schedule.status_code==409
+    new_category=client.post(f"/api/v1/admin/events/{event_id}/categories",headers=admin["headers"],json={
+        "name":f"Custom-{uuid.uuid4().hex[:8]}","description":"Categoría asociada al crear",
+        "min_participants":1,"max_participants":2,"min_coaches":0,"max_coaches":1})
+    assert new_category.status_code==201,new_category.text
+    new_category_tariff=client.post("/api/v1/tariffs",headers=admin["headers"],json={
+        "event_id":event_id,"category_id":new_category.json()["id"],"amount":"15.00",
+        "valid_from":date.today().isoformat(),"valid_until":None,"is_active":True})
+    assert new_category_tariff.status_code==201,new_category_tariff.text
+    setup=client.get(f"/api/v1/admin/events/{event_id}",headers=admin["headers"])
+    assert setup.status_code==200 and setup.json()["has_active_category_tariff"] is True
+    assert setup.json()["registration_enabled"] is True
     scheduled=client.patch(f"/api/v1/admin/events/{event_id}/status",headers=admin["headers"],json={"status":"SCHEDULED"})
     assert scheduled.status_code==200 and scheduled.json()["status"]=="SCHEDULED"
+    assert client.get(f"/api/v1/admin/events/{event_id}",headers=admin["headers"]).json()["registration_open"] is True
     invalid=client.patch(f"/api/v1/admin/events/{event_id}/status",headers=admin["headers"],json={"status":"DRAFT"})
     assert invalid.status_code==409
     update=client.put(f"/api/v1/admin/events/{event_id}",headers=admin["headers"],json={
         "name":created.json()["name"],"edition_year":date.today().year,"description":"Descripción actualizada",
-        "venue":"Ambato","registration_start":"2020-01-01","registration_end":"2099-12-31",
+        "venue":"Ambato","registration_start":"2026-01-01","registration_end":"2027-02-28",
         "starts_at":"2027-03-01T08:00:00","ends_at":"2027-03-01T18:00:00","is_active":True})
     assert update.status_code==200
     assert client.get(f"/api/v1/admin/events/{event_id}/audit",headers=admin["headers"]).json()["total"]==2
+    event_detail=client.get(f"/api/v1/admin/events/{event_id}",headers=admin["headers"])
+    assert any(item["id"]==new_category.json()["id"] for item in event_detail.json()["categories"])
     rules=client.put(f"/api/v1/admin/events/{event_id}/categories/{ctx['category_id']}",headers=admin["headers"],json={
         "is_active":True,"min_participants":1,"max_participants":2,"min_coaches":0,"max_coaches":1,"max_registrations":None})
     assert rules.status_code==200,rules.text

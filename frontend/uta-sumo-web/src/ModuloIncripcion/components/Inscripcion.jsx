@@ -119,7 +119,7 @@ export default function Inscripcion() {
 
   useEffect(() => {
     if (!toast) return undefined
-    const timeout = window.setTimeout(() => setToast(''), 3200)
+    const timeout = window.setTimeout(() => setToast(''), 6000)
     return () => window.clearTimeout(timeout)
   }, [toast])
 
@@ -255,16 +255,33 @@ export default function Inscripcion() {
         nuevosErrores.roster = 'La cantidad de participantes o coaches no cumple las reglas de esta categoría.'
       }
       const erroresRoster = erroresIntegrantes(integrantes, institucionesDisponibles)
-      if (erroresRoster.some((item) => Object.keys(item).length)) nuevosErrores.integrantes = erroresRoster
+      if (erroresRoster.some((item) => Object.values(item).some(
+        (mensaje) => typeof mensaje === 'string' && mensaje.trim(),
+      ))) nuevosErrores.integrantes = erroresRoster
     }
-    nuevosErrores.roster ||= validarNumerosPersonalizados(formularioEvento?.fields || [], respuestasPersonalizadas)
+    const camposFormulario = formularioEvento?.fields || []
+    const faltaCampoObligatorio = camposFormulario.some((field) => field.required
+      && (respuestasPersonalizadas[field.id] === undefined || respuestasPersonalizadas[field.id] === ''
+        || (Array.isArray(respuestasPersonalizadas[field.id]) && !respuestasPersonalizadas[field.id].length)))
+    if (faltaCampoObligatorio) nuevosErrores.roster ||= 'Completa los campos obligatorios del formulario.'
+    nuevosErrores.roster ||= validarNumerosPersonalizados(camposFormulario, respuestasPersonalizadas)
     setErrores(nuevosErrores)
-    if (Object.keys(nuevosErrores).length) {
+    const primerMensaje = Object.values(nuevosErrores)
+      .flatMap((error) => Array.isArray(error) ? error.flatMap((item) => Object.values(item || {})) : [error])
+      .find((error) => typeof error === 'string' && error.trim())
+    const hayErrorReal = Object.entries(nuevosErrores).some(([campo, error]) => (
+      campo === 'integrantes'
+        ? error.some((item) => Object.values(item || {}).some((mensaje) => typeof mensaje === 'string' && mensaje.trim()))
+        : typeof error === 'string' ? Boolean(error.trim()) : Boolean(error)
+    ))
+    if (hayErrorReal) {
+      setToast(primerMensaje || 'Corrige los datos que aparecen marcados en el formulario.')
       setPasoFormulario(nuevosErrores.evento || nuevosErrores.tarifa || nuevosErrores.configuracion ? 1 : 2)
       return
     }
 
     setEnviando(true)
+    setToast('')
     try {
       const respuesta = await crearInscripcion({
         token,
@@ -280,38 +297,11 @@ export default function Inscripcion() {
     } catch (error) {
       const campo = error.field === 'teamName' ? 'equipo' : error.field === 'robotName' ? 'robot' : null
       setErrores(campo ? { [campo]: error.message } : { servidor: error.message })
+      setToast(error.message)
       if (campo) setPasoFormulario(2)
     } finally {
       setEnviando(false)
     }
-  }
-
-  function continuarRevision() {
-    const errorEquipo = !equipo.trim() ? 'Ingresa el nombre del equipo.' : equipo.trim().length > 30 ? 'Usa máximo 30 caracteres.' : ''
-    const errorRobot = !robot.trim() ? 'Ingresa el nombre del robot.' : robot.trim().length > 30 ? 'Usa máximo 30 caracteres.' : ''
-    let errorRoster = ''
-    const requiredMissing = (formularioEvento?.fields || []).some((field) => field.required
-      && (respuestasPersonalizadas[field.id] === undefined || respuestasPersonalizadas[field.id] === ''
-        || (Array.isArray(respuestasPersonalizadas[field.id]) && !respuestasPersonalizadas[field.id].length)))
-    let erroresMiembros = null
-    if (requiredMissing) errorRoster = 'Completa los campos obligatorios del formulario.'
-    errorRoster ||= validarNumerosPersonalizados(formularioEvento?.fields || [], respuestasPersonalizadas)
-    if (!reglasCategoria || !rosterListo) {
-      errorRoster = 'Espera a que se carguen las reglas de integrantes.'
-    } else {
-      const participantes = integrantes.filter((item) => item.role === 'PARTICIPANT').length
-      const coaches = integrantes.filter((item) => item.role === 'COACH').length
-      if (participantes < reglasCategoria.min_participants || participantes > reglasCategoria.max_participants
-        || coaches < reglasCategoria.min_coaches || coaches > reglasCategoria.max_coaches) {
-        errorRoster = 'La cantidad de participantes o coaches no cumple las reglas de esta categoría.'
-      }
-      erroresMiembros = erroresIntegrantes(integrantes, institucionesDisponibles)
-      if (erroresMiembros.some((item) => Object.keys(item).length)) errorRoster ||= 'Completa o corrige los datos de cada integrante.'
-    }
-    setErrores((actuales) => ({ ...actuales, equipo: errorEquipo, robot: errorRobot, roster: errorRoster, integrantes: erroresMiembros }))
-    if (errorEquipo || errorRobot || errorRoster) return
-    setErrores((actuales) => ({ ...actuales, equipo: '', robot: '', roster: '', integrantes: null }))
-    setPasoFormulario(3)
   }
 
   function nuevaInscripcion() {
@@ -368,10 +358,10 @@ export default function Inscripcion() {
         </div>
       </div>
 
-      <div className="registration-progress" aria-label={`Paso ${pasoFormulario} de 3`}>
-        <div className="registration-progress-heading"><span>Inscripción</span><strong>Paso {pasoFormulario} de 3</strong></div>
+      <div className="registration-progress" aria-label={`Paso ${pasoFormulario} de 2`}>
+        <div className="registration-progress-heading"><span>Inscripción</span><strong>Paso {pasoFormulario} de 2</strong></div>
         <ol>
-          {[['Evento', 'event'], ['Equipo e integrantes', 'team'], ['Revisión', 'review']].map(([label, key], index) => (
+          {[['Evento', 'event'], ['Equipo e integrantes', 'team']].map(([label, key], index) => (
             <li key={key} className={pasoFormulario === index + 1 ? 'is-current' : pasoFormulario > index + 1 ? 'is-complete' : ''}
               aria-current={pasoFormulario === index + 1 ? 'step' : undefined}>
               <span>{index + 1}</span>{label}
@@ -514,33 +504,12 @@ export default function Inscripcion() {
       {errores.roster && <p className="form-error" role="alert">{errores.roster}</p>}
       <div className="registration-step-actions">
         <button className="secondary-button" type="button" onClick={() => setPasoFormulario(1)}>Volver al evento</button>
-        <button className="primary-button" type="button" onClick={continuarRevision} disabled={!rosterListo}>
-          Revisar datos <span aria-hidden="true"> →</span>
+        <button className="primary-button" type="submit"
+          disabled={enviando || cargandoConfiguracion || !datos || !registroAbierto || !tarifa || !rosterListo}>
+          {enviando ? 'Creando inscripción...' : 'Crear inscripción y orden de pago'}
+          {!enviando && <span aria-hidden="true"> →</span>}
         </button>
       </div>
-      </>}
-
-      {pasoFormulario === 3 && <>
-        <section className="registration-review" aria-labelledby="registration-review-title">
-          <h2 id="registration-review-title">Revisa la inscripción</h2>
-          <p>Confirma que los datos del evento y del equipo estén correctos antes de crear la orden de pago.</p>
-          <dl>
-            <div><dt>Evento</dt><dd>{datos?.eventos.find((evento) => String(evento.id) === eventoId)?.name || '—'}</dd></div>
-            <div><dt>Categoría</dt><dd>{tarifa?.category || '—'}</dd></div>
-            <div><dt>Equipo</dt><dd>{equipo || '—'}</dd></div>
-            <div><dt>Robot</dt><dd>{robot || '—'}</dd></div>
-            <div><dt>Participantes y coaches</dt><dd>{integrantes.filter((item) => item.role === 'PARTICIPANT').length} participantes · {integrantes.filter((item) => item.role === 'COACH').length} coaches</dd></div>
-            <div><dt>Total de inscripción</dt><dd>{tarifa ? `${configuracionEvento.currency || 'USD'} ${Number(tarifa.amount).toFixed(2)}` : '—'}</dd></div>
-          </dl>
-        </section>
-        <div className="registration-step-actions">
-          <button className="secondary-button" type="button" onClick={() => setPasoFormulario(2)}>Volver a editar el equipo</button>
-      <button className="primary-button" type="submit"
-        disabled={enviando || cargandoConfiguracion || !datos || !registroAbierto || !tarifa || !rosterListo}>
-        {enviando ? 'Creando inscripción...' : 'Crear inscripción y orden de pago'}
-        {!enviando && <span aria-hidden="true"> →</span>}
-      </button>
-        </div>
       </>}
     </form>
     {toast && <div className="registration-toast" role="alert" aria-live="assertive">{toast}</div>}
