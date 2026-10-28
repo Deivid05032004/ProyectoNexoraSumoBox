@@ -1,0 +1,8 @@
+FROM mcr.microsoft.com/mssql/server:2022-latest
+
+# A dedicated named volume mounted here stores backups separately from MDF/LDF data.
+USER root
+RUN mkdir -p /var/opt/mssql/backups \
+    && chown 10001:0 /var/opt/mssql/backups \
+    && chmod 0770 /var/opt/mssql/backups
+USER 10001
