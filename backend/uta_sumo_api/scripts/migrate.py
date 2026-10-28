@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[3]
 API_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_DIR))
 
-from database import DB_NAME, DB_SERVER, engine, connection_string
+from database import (DB_AUTH_MODE, DB_NAME, DB_SERVER, migration_connection_string,
+                      migration_engine)
 from app.core.crypto import (email_lookup_hash, encrypt_bytes, encrypt_text, is_encrypted,
                              decrypt_text, payment_reference_lookup_hash,
                              resource_name_lookup_hash, normalize_resource_name)
@@ -93,7 +94,7 @@ def _is_local_sql_server() -> bool:
 
 
 def _master_connection_string() -> str:
-    result, replaced = re.subn(r"(?i)DATABASE=[^;]+;", "DATABASE=master;", connection_string, count=1)
+    result, replaced = re.subn(r"(?i)DATABASE=[^;]+;", "DATABASE=master;", migration_connection_string, count=1)
     if replaced != 1:
         raise SystemExit("No se pudo dirigir la conexión de SQL Server a master.")
     return result
@@ -126,6 +127,25 @@ def _ensure_database_exists() -> None:
         cursor = conn.cursor()
         for batch in _batch_statements(source):
             _execute_batch(cursor, batch)
+        if DB_AUTH_MODE == "sql" and os.getenv("DB_USERNAME"):
+            _ensure_runtime_principal(cursor)
+
+
+def _ensure_runtime_principal(cursor) -> None:
+    """Create a restricted SQL principal for the API, separate from the migrator."""
+    username = os.getenv("DB_USERNAME", "").strip()
+    password = os.getenv("DB_PASSWORD", "")
+    if (not IDENTIFIER.fullmatch(username) or username.casefold() in {"sa", "dbo", "guest", "sys"}
+            or not password):
+        raise SystemExit("DB_USERNAME debe ser un identificador SQL válido y DB_PASSWORD no puede estar vacío.")
+    login = f"[{username}]"
+    escaped_username = username.replace("'", "''")
+    escaped_password = password.replace("'", "''")
+    database = _database_identifier()
+    cursor.execute(f"IF SUSER_ID(N'{escaped_username}') IS NULL CREATE LOGIN {login} WITH PASSWORD=N'{escaped_password}', CHECK_POLICY=ON; ELSE ALTER LOGIN {login} WITH PASSWORD=N'{escaped_password}', CHECK_POLICY=ON;")
+    cursor.execute(f"USE {database}; IF USER_ID(N'{escaped_username}') IS NULL CREATE USER {login} FOR LOGIN {login};")
+    cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM sys.database_role_members drm JOIN sys.database_principals r ON r.principal_id=drm.role_principal_id JOIN sys.database_principals u ON u.principal_id=drm.member_principal_id WHERE r.name=N'db_datareader' AND u.name=N'{escaped_username}') ALTER ROLE [db_datareader] ADD MEMBER {login};")
+    cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM sys.database_role_members drm JOIN sys.database_principals r ON r.principal_id=drm.role_principal_id JOIN sys.database_principals u ON u.principal_id=drm.member_principal_id WHERE r.name=N'db_datawriter' AND u.name=N'{escaped_username}') ALTER ROLE [db_datawriter] ADD MEMBER {login};")
 
 
 def _reset_database(confirm_drop: bool = False) -> None:
@@ -136,7 +156,7 @@ def _reset_database(confirm_drop: bool = False) -> None:
         cursor = conn.cursor()
         exists = cursor.execute("SELECT DB_ID(?)", DB_NAME).fetchval()
         if exists is not None:
-            with pyodbc.connect(connection_string, autocommit=True) as target:
+            with pyodbc.connect(migration_connection_string, autocommit=True) as target:
                 target_cursor = target.cursor()
                 table_names = [row[0] for row in target_cursor.execute(
                     "SELECT name FROM sys.tables WHERE schema_id=SCHEMA_ID('dbo')")]
@@ -186,7 +206,7 @@ def _reset_database(confirm_drop: bool = False) -> None:
 
 
 def _ensure_migration_table() -> None:
-    with engine.begin() as conn:
+    with migration_engine.begin() as conn:
         conn.execute(text("""
             IF OBJECT_ID('dbo.SchemaMigrations','U') IS NULL
             BEGIN
@@ -200,7 +220,7 @@ def _ensure_migration_table() -> None:
 
 
 def _apply_migrations() -> None:
-    engine.dispose()
+    migration_engine.dispose()
     _ensure_migration_table()
     for path in MIGRATIONS:
         if not path.is_file():
@@ -208,7 +228,7 @@ def _apply_migrations() -> None:
         source = path.read_text(encoding="utf-8-sig")
         checksum = hashlib.sha256(source.encode("utf-8")).hexdigest()
         migration_id = path.relative_to(ROOT).as_posix()
-        with engine.connect() as conn:
+        with migration_engine.connect() as conn:
             prior = conn.execute(text("SELECT Checksum FROM dbo.SchemaMigrations WHERE MigrationId=:id"),
                                  {"id": migration_id}).scalar_one_or_none()
         if prior is not None:
@@ -222,7 +242,7 @@ def _apply_migrations() -> None:
         file_backups = []
         regulation_file_cleanup = []
         try:
-            with engine.begin() as conn:
+            with migration_engine.begin() as conn:
                 raw = conn.connection.driver_connection.cursor()
                 try:
                     for batch in _batch_statements(source):
@@ -251,7 +271,7 @@ def _apply_migrations() -> None:
 
 def _backfill_payment_reference_hashes() -> None:
     """Build keyed exact-match indexes for legacy encrypted transfer references."""
-    with engine.begin() as conn:
+    with migration_engine.begin() as conn:
         if conn.execute(text("SELECT COL_LENGTH('dbo.Payments','PaymentReferenceLookupHash')")).scalar_one() is None:
             return
         rows = conn.execute(text("""
@@ -356,7 +376,7 @@ def _backfill_regulation_file_content(conn):
 
 def _cleanup_legacy_regulation_files() -> None:
     """Remove managed legacy copies only after SQL Server owns every PDF."""
-    with engine.connect() as conn:
+    with migration_engine.connect() as conn:
         if conn.execute(text("SELECT OBJECT_ID('dbo.EventRegulations','U')")).scalar_one_or_none() is None:
             return
         has_content = conn.execute(text(
