@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { adminWebSocketUrl, apiRequest, clearAdminSession, getAdminUser } from './services/adminApi';
 import { obtenerInscripciones, actualizarEstadoInscripcion, actualizarEstadoPago, obtenerComprobante, exportarInscripcionesCSV } from './services/adminInscripcionesApi';
-import ResultadosModal from './components/ResultadosModal';
+import TournamentManager from './components/TournamentManager';
 import AdminCreateForm from './AdminCreateForm';
 import RegistrationFormBuilder from './RegistrationFormBuilder';
 import EventManagement from './EventManagement';
@@ -305,7 +305,7 @@ export default function AdminDashboard() {
               <span className="admin-sidebar-icon"><NavIcon name="registration" /></span> Inscripciones
             </button>
             <button type="button" className="admin-sidebar-link" onClick={() => setModalResultadosAbierto(true)}>
-              <span className="admin-sidebar-icon"><NavIcon name="competition" /></span> Marcador en vivo
+              <span className="admin-sidebar-icon"><NavIcon name="competition" /></span> Torneo y marcador
             </button>
             {user?.role === 'ADMIN' && <button type="button" className="admin-sidebar-link" onClick={() => setCrearFormulario(true)}>
               <span className="admin-sidebar-icon"><NavIcon name="form" /></span> Formularios
@@ -419,7 +419,8 @@ export default function AdminDashboard() {
         </div>
       </div>}
       </div>
-      <ResultadosModal isOpen={modalResultadosAbierto} onClose={() => setModalResultadosAbierto(false)} />
+      <TournamentManager isOpen={modalResultadosAbierto} event={eventoSeleccionado}
+        onClose={() => setModalResultadosAbierto(false)} />
       {crearAdmin && <AdminCreateForm onClose={() => setCrearAdmin(false)} />}
       {crearFormulario && <RegistrationFormBuilder onClose={() => setCrearFormulario(false)} />}
       {gestionarEventos && <EventManagement onClose={() => setGestionarEventos(false)} />}

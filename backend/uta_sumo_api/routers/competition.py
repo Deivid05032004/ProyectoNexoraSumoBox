@@ -94,6 +94,586 @@ class MatchTimerConfig(BaseModel):
     direction: str = Field(default="DOWN", pattern="^(UP|DOWN)$")
 
 
+class TournamentTeamAssignment(BaseModel):
+    team_id: int = Field(gt=0)
+    robot_id: int = Field(gt=0)
+    group_code: str = Field(pattern="^[A-D]$")
+
+
+class TournamentInitializeInput(BaseModel):
+    category_id: int = Field(gt=0)
+    teams: list[TournamentTeamAssignment] = Field(min_length=4, max_length=64)
+
+
+class YukoInput(BaseModel):
+    team_id: int = Field(gt=0)
+    points_delta: int = Field(default=1, ge=-1, le=1)
+
+    @field_validator("points_delta")
+    @classmethod
+    def non_zero_yuko_change(cls, value):
+        if value == 0:
+            raise ValueError("El ajuste de Yuko debe ser +1 o -1.")
+        return value
+
+
+def _round_robin_pairs(team_ids: list[int]) -> list[tuple[int, int]]:
+    slots: list[int | None] = list(team_ids)
+    if len(slots) % 2:
+        slots.append(None)
+    pairs: list[tuple[int, int]] = []
+    for _ in range(len(slots) - 1):
+        for index in range(len(slots) // 2):
+            left, right = slots[index], slots[-1 - index]
+            if left is not None and right is not None:
+                pairs.append((left, right))
+        slots = [slots[0], slots[-1], *slots[1:-1]]
+    return pairs
+
+
+def _tournament_matches(db: Session, event_id: int, category_id: int) -> list[dict]:
+    rows = db.execute(text("""
+      SELECT m.MatchId AS match_id,m.MatchNumber AS match_number,m.MatchStatus AS status,
+        m.StageCode AS stage_code,m.GroupCode AS group_code,m.DohyoNumber AS dohyo_number,
+        m.ScoreToWin AS score_to_win,m.BracketSlot AS bracket_slot,
+        m.WinnerTeamId AS winner_team_id,m.LoserTeamId AS loser_team_id,
+        cr.RoundNumber AS schedule_round,cr.Name AS round_name,
+        ta.TeamId AS team_id_a,ta.Name AS team_a,ia.Name AS institution_a,
+        mtA.RobotId AS robot_id_a,ra.Name AS robot_a,
+        COALESCE(sa.Points,0) AS score_a,
+        tb.TeamId AS team_id_b,tb.Name AS team_b,ib.Name AS institution_b,
+        mtB.RobotId AS robot_id_b,rb.Name AS robot_b,
+        COALESCE(sb.Points,0) AS score_b
+      FROM dbo.CompetitionMatches m
+      JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+      JOIN dbo.CompetitionMatchTeams mtA ON mtA.MatchId=m.MatchId AND mtA.TeamPosition=1
+      JOIN dbo.CompetitionMatchTeams mtB ON mtB.MatchId=m.MatchId AND mtB.TeamPosition=2
+      JOIN dbo.Teams ta ON ta.TeamId=mtA.TeamId JOIN dbo.Institutions ia ON ia.InstitutionId=ta.InstitutionId
+      JOIN dbo.Teams tb ON tb.TeamId=mtB.TeamId JOIN dbo.Institutions ib ON ib.InstitutionId=tb.InstitutionId
+      LEFT JOIN dbo.Robots ra ON ra.RobotId=mtA.RobotId
+      LEFT JOIN dbo.Robots rb ON rb.RobotId=mtB.RobotId
+      OUTER APPLY (SELECT SUM(CONVERT(BIGINT,PointsDelta)) AS Points FROM dbo.ScoreEntries
+        WHERE MatchId=m.MatchId AND TeamId=mtA.TeamId) sa
+      OUTER APPLY (SELECT SUM(CONVERT(BIGINT,PointsDelta)) AS Points FROM dbo.ScoreEntries
+        WHERE MatchId=m.MatchId AND TeamId=mtB.TeamId) sb
+      WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode<>'MANUAL'
+      ORDER BY CASE m.StageCode WHEN 'GROUP' THEN 1 WHEN 'QUARTERFINAL' THEN 2
+        WHEN 'SEMIFINAL' THEN 3 WHEN 'THIRD_PLACE' THEN 4 ELSE 5 END,
+        m.GroupCode,m.MatchNumber
+    """), {"event": event_id, "category": category_id}).mappings().all()
+    result = []
+    for row in rows:
+        item = dict(row)
+        for field in ("team_a", "team_b", "robot_a", "robot_b"):
+            if item[field] is not None:
+                item[field] = decrypt_text(item[field])
+        item["score_a"] = int(item["score_a"] or 0)
+        item["score_b"] = int(item["score_b"] or 0)
+        item["score_to_win"] = int(item["score_to_win"])
+        result.append(item)
+    return result
+
+
+def _tournament_snapshot(db: Session, event_id: int, category_id: int) -> dict:
+    state = db.execute(text("""
+      SELECT CurrentPhase FROM dbo.TournamentPhaseState
+      WHERE EventId=:event AND CategoryId=:category
+    """), {"event": event_id, "category": category_id}).scalar_one_or_none()
+    assignments = db.execute(text("""
+      SELECT g.GroupCode AS group_code,t.TeamId AS team_id,t.Name AS team,
+        i.Name AS institution,r.RobotId AS robot_id,r.Name AS robot
+      FROM dbo.TournamentTeamGroups g
+      JOIN dbo.Teams t ON t.TeamId=g.TeamId JOIN dbo.Institutions i ON i.InstitutionId=t.InstitutionId
+      JOIN dbo.Robots r ON r.RobotId=g.RobotId
+      WHERE g.EventId=:event AND g.CategoryId=:category
+      ORDER BY g.GroupCode,t.Name,t.TeamId
+    """), {"event": event_id, "category": category_id}).mappings().all()
+    teams_by_group: dict[str, list[dict]] = {code: [] for code in "ABCD"}
+    team_rows = {}
+    for row in assignments:
+        team = dict(row)
+        team["team"] = decrypt_text(team["team"])
+        team["robot"] = decrypt_text(team["robot"])
+        team.update({"played": 0, "wins": 0, "losses": 0, "yukos_for": 0, "yukos_against": 0})
+        teams_by_group[team["group_code"]].append(team)
+        team_rows[team["team_id"]] = team
+
+    matches = _tournament_matches(db, event_id, category_id)
+    for match in matches:
+        if match["stage_code"] != "GROUP" or match["status"] != "FINISHED":
+            continue
+        left, right = team_rows.get(match["team_id_a"]), team_rows.get(match["team_id_b"])
+        if not left or not right:
+            continue
+        left["played"] += 1; right["played"] += 1
+        left["yukos_for"] += match["score_a"]; left["yukos_against"] += match["score_b"]
+        right["yukos_for"] += match["score_b"]; right["yukos_against"] += match["score_a"]
+        if match["winner_team_id"] == left["team_id"]:
+            left["wins"] += 1; right["losses"] += 1
+        elif match["winner_team_id"] == right["team_id"]:
+            right["wins"] += 1; left["losses"] += 1
+
+    for code, group_teams in teams_by_group.items():
+        def compare(left: dict, right: dict) -> int:
+            if left["wins"] != right["wins"]:
+                return -1 if left["wins"] > right["wins"] else 1
+            left_diff = left["yukos_for"] - left["yukos_against"]
+            right_diff = right["yukos_for"] - right["yukos_against"]
+            if left_diff != right_diff:
+                return -1 if left_diff > right_diff else 1
+            direct = next((m for m in matches if m["stage_code"] == "GROUP"
+                           and m["status"] == "FINISHED"
+                           and {m["team_id_a"], m["team_id_b"]} == {left["team_id"], right["team_id"]}), None)
+            if direct and direct["winner_team_id"] in (left["team_id"], right["team_id"]):
+                return -1 if direct["winner_team_id"] == left["team_id"] else 1
+            if left["yukos_for"] != right["yukos_for"]:
+                return -1 if left["yukos_for"] > right["yukos_for"] else 1
+            return (left["team"].casefold() > right["team"].casefold()) - (left["team"].casefold() < right["team"].casefold())
+
+        from functools import cmp_to_key
+        group_teams.sort(key=cmp_to_key(compare))
+        for rank, team in enumerate(group_teams, 1):
+            team["rank"] = rank
+            team["difference"] = team["yukos_for"] - team["yukos_against"]
+
+    live_rows = db.execute(text("""
+      SELECT DohyoNumber AS dohyo_number,MatchId AS match_id
+      FROM dbo.LiveDohyoMatches WHERE EventId=:event AND CategoryId=:category
+      ORDER BY DohyoNumber
+    """), {"event": event_id, "category": category_id}).mappings().all()
+    by_id = {match["match_id"]: match for match in matches}
+    boards = [{"dohyo_number": number, "match": None} for number in range(1, 5)]
+    for row in live_rows:
+        boards[int(row["dohyo_number"]) - 1]["match"] = by_id.get(row["match_id"])
+    return {"event_id": event_id, "category_id": category_id, "phase": state or "NOT_CONFIGURED",
+            "groups": teams_by_group, "matches": matches, "boards": boards}
+
+
+def _ensure_tournament_round(db: Session, event_id: int, category_id: int,
+                             name: str, actor_id: int) -> int:
+    number = int(db.execute(text("""
+      SELECT COALESCE(MAX(RoundNumber),0)+1 FROM dbo.CompetitionRounds WITH (UPDLOCK,HOLDLOCK)
+      WHERE EventId=:event AND CategoryId=:category
+    """), {"event": event_id, "category": category_id}).scalar_one())
+    return int(db.execute(text("""
+      INSERT dbo.CompetitionRounds(EventId,CategoryId,RoundNumber,Name,RoundStatus)
+      OUTPUT INSERTED.RoundId VALUES(:event,:category,:number,:name,'SCHEDULED')
+    """), {"event": event_id, "category": category_id, "number": number, "name": name}).scalar_one())
+
+
+def _create_tournament_match(db: Session, event_id: int, category_id: int, round_id: int,
+                             match_number: int, stage: str, dohyo: int,
+                             teams: list[tuple[int, int]], actor_id: int,
+                             group_code: str | None = None, slot: str | None = None,
+                             score_to_win: int = 2) -> int:
+    match_id = int(db.execute(text("""
+      INSERT dbo.CompetitionMatches(RoundId,MatchNumber,MatchStatus,StageCode,GroupCode,
+        DohyoNumber,ScoreToWin,BracketSlot)
+      OUTPUT INSERTED.MatchId
+      VALUES(:round,:number,'SCHEDULED',:stage,:group,:dohyo,:target,:slot)
+    """), {"round": round_id, "number": match_number, "stage": stage,
+          "group": group_code, "dohyo": dohyo, "target": score_to_win, "slot": slot}).scalar_one())
+    for position, (team_id, robot_id) in enumerate(teams, 1):
+        db.execute(text("""
+          INSERT dbo.CompetitionMatchTeams(MatchId,TeamId,RobotId,TeamPosition)
+          VALUES(:match,:team,:robot,:position)
+        """), {"match": match_id, "team": team_id, "robot": robot_id, "position": position})
+    return match_id
+
+
+def _set_primary_live_match(db: Session, match_id: int, actor_id: int) -> None:
+    current = db.execute(text("""
+      SELECT MatchId FROM dbo.ActiveCombat WITH (UPDLOCK,HOLDLOCK) WHERE ActiveCombatId=1
+    """)).scalar_one_or_none()
+    if current == match_id:
+        return
+    if current is None:
+        db.execute(text("INSERT dbo.ActiveCombat(ActiveCombatId,MatchId,UpdatedByUserId) VALUES(1,:match,:actor)"),
+                   {"match": match_id, "actor": actor_id})
+    else:
+        db.execute(text("""
+          UPDATE dbo.ActiveCombat SET MatchId=:match,UpdatedByUserId=:actor,UpdatedAt=SYSUTCDATETIME()
+          WHERE ActiveCombatId=1
+        """), {"match": match_id, "actor": actor_id})
+        db.execute(text("""
+          INSERT dbo.ActiveCombatHistory(PreviousMatchId,NewMatchId,ActorUserId,ActionCode,Reason)
+          VALUES(:old,:match,:actor,'REPLACED','AVANCE DE FASE DEL TORNEO')
+        """), {"old": current, "match": match_id, "actor": actor_id})
+
+
+def _set_live_dohyo(db: Session, event_id: int, category_id: int, dohyo: int,
+                    match_id: int | None, actor_id: int) -> None:
+    existing = db.execute(text("""
+      SELECT MatchId FROM dbo.LiveDohyoMatches WITH (UPDLOCK,HOLDLOCK)
+      WHERE EventId=:event AND CategoryId=:category AND DohyoNumber=:dohyo
+    """), {"event": event_id, "category": category_id, "dohyo": dohyo}).scalar_one_or_none()
+    if match_id is None:
+        if existing is not None:
+            db.execute(text("""DELETE dbo.LiveDohyoMatches
+              WHERE EventId=:event AND CategoryId=:category AND DohyoNumber=:dohyo"""),
+                       {"event": event_id, "category": category_id, "dohyo": dohyo})
+        return
+    if existing is None:
+        db.execute(text("""
+          INSERT dbo.LiveDohyoMatches(EventId,CategoryId,DohyoNumber,MatchId,UpdatedByUserId)
+          VALUES(:event,:category,:dohyo,:match,:actor)
+        """), {"event": event_id, "category": category_id, "dohyo": dohyo,
+              "match": match_id, "actor": actor_id})
+    elif existing != match_id:
+        db.execute(text("""
+          UPDATE dbo.LiveDohyoMatches SET MatchId=:match,UpdatedByUserId=:actor,UpdatedAt=SYSUTCDATETIME()
+          WHERE EventId=:event AND CategoryId=:category AND DohyoNumber=:dohyo
+        """), {"event": event_id, "category": category_id, "dohyo": dohyo,
+              "match": match_id, "actor": actor_id})
+
+
+def _create_match_batch(db: Session, event_id: int, category_id: int, stage: str,
+                        fixtures: list[tuple[int, str, list[int], int]], actor_id: int) -> list[int]:
+    round_id = _ensure_tournament_round(db, event_id, category_id, stage, actor_id)
+    matches = []
+    for number, (dohyo, slot, team_ids, score_to_win) in enumerate(fixtures, 1):
+        robot_ids = db.execute(text("""
+          SELECT TeamId,RobotId FROM dbo.TournamentTeamGroups
+          WHERE EventId=:event AND CategoryId=:category AND TeamId IN (:left,:right)
+        """), {"event": event_id, "category": category_id,
+              "left": team_ids[0], "right": team_ids[1]}).all()
+        robot_by_team = {int(team_id): int(robot_id) for team_id, robot_id in robot_ids}
+        if any(team_id not in robot_by_team for team_id in team_ids):
+            raise HTTPException(409, "Un equipo de la llave ya no está asignado a este torneo.")
+        match_id = _create_tournament_match(db,event_id,category_id,round_id,number,stage,dohyo,
+             [(team_ids[0],robot_by_team[team_ids[0]]),(team_ids[1],robot_by_team[team_ids[1]])],
+             actor_id,slot=slot,score_to_win=score_to_win)
+        db.execute(text("UPDATE dbo.CompetitionMatches SET MatchStatus='LIVE' WHERE MatchId=:id"),
+                   {"id": match_id})
+        _set_live_dohyo(db,event_id,category_id,dohyo,match_id,actor_id)
+        matches.append(match_id)
+    if matches:
+        _set_primary_live_match(db,matches[0],actor_id)
+    return matches
+
+
+def _progress_tournament(db: Session, event_id: int, category_id: int, actor_id: int) -> None:
+    phase = db.execute(text("""
+      SELECT CurrentPhase FROM dbo.TournamentPhaseState WITH (UPDLOCK,HOLDLOCK)
+      WHERE EventId=:event AND CategoryId=:category
+    """), {"event": event_id, "category": category_id}).scalar_one_or_none()
+    if phase in (None, "FINISHED"):
+        return
+    unfinished = int(db.execute(text("""
+      SELECT COUNT(*) FROM dbo.CompetitionMatches m JOIN dbo.CompetitionRounds r ON r.RoundId=m.RoundId
+      WHERE r.EventId=:event AND r.CategoryId=:category AND m.StageCode=:phase
+        AND m.MatchStatus<>'FINISHED'
+    """), {"event": event_id, "category": category_id, "phase": phase}).scalar_one())
+    if unfinished:
+        return
+    for dohyo in range(1, 5):
+        _set_live_dohyo(db,event_id,category_id,dohyo,None,actor_id)
+    fixtures: list[tuple[int, str, list[int], int]] = []
+    next_phase: str
+    if phase == "GROUP":
+        snapshot = _tournament_snapshot(db,event_id,category_id)
+        groups = snapshot["groups"]
+        if any(len(groups[code]) < 2 for code in "ABCD"):
+            raise HTTPException(409, "Los cuatro grupos necesitan al menos dos equipos para formar los cuartos.")
+        formulas = [(1,"QF1",groups["A"][0]["team_id"],groups["B"][1]["team_id"],2),
+                    (2,"QF2",groups["C"][0]["team_id"],groups["D"][1]["team_id"],2),
+                    (3,"QF3",groups["B"][0]["team_id"],groups["A"][1]["team_id"],2),
+                    (4,"QF4",groups["D"][0]["team_id"],groups["C"][1]["team_id"],2)]
+        fixtures = [(dohyo,slot,[left,right],target) for dohyo,slot,left,right,target in formulas]
+        next_phase = "QUARTERFINAL"
+    elif phase == "QUARTERFINAL":
+        results = {row["bracket_slot"]: row for row in _tournament_matches(db,event_id,category_id)
+                   if row["stage_code"] == "QUARTERFINAL"}
+        fixtures = [(1,"SF1",[results["QF1"]["winner_team_id"],results["QF2"]["winner_team_id"]],2),
+                    (2,"SF2",[results["QF3"]["winner_team_id"],results["QF4"]["winner_team_id"]],2)]
+        next_phase = "SEMIFINAL"
+    elif phase == "SEMIFINAL":
+        results = {row["bracket_slot"]: row for row in _tournament_matches(db,event_id,category_id)
+                   if row["stage_code"] == "SEMIFINAL"}
+        fixtures = [(1,"THIRD",[results["SF1"]["loser_team_id"],results["SF2"]["loser_team_id"]],2)]
+        next_phase = "THIRD_PLACE"
+    elif phase == "THIRD_PLACE":
+        results = {row["bracket_slot"]: row for row in _tournament_matches(db,event_id,category_id)
+                   if row["stage_code"] == "SEMIFINAL"}
+        fixtures = [(1,"FINAL",[results["SF1"]["winner_team_id"],results["SF2"]["winner_team_id"]],3)]
+        next_phase = "FINAL"
+    elif phase == "FINAL":
+        db.execute(text("""
+          UPDATE dbo.TournamentPhaseState SET CurrentPhase='FINISHED',UpdatedByUserId=:actor,
+            UpdatedAt=SYSUTCDATETIME() WHERE EventId=:event AND CategoryId=:category
+        """), {"actor": actor_id, "event": event_id, "category": category_id})
+        return
+    else:
+        return
+    _create_match_batch(db,event_id,category_id,next_phase,fixtures,actor_id)
+    db.execute(text("""
+      UPDATE dbo.TournamentPhaseState SET CurrentPhase=:phase,UpdatedByUserId=:actor,
+        UpdatedAt=SYSUTCDATETIME() WHERE EventId=:event AND CategoryId=:category
+    """), {"phase": next_phase, "actor": actor_id, "event": event_id, "category": category_id})
+
+
+@router.get("/events/{event_id}/tournament")
+def get_tournament(event_id: int, category_id: int = Query(gt=0),
+                   user=Depends(require_roles(*STAFF)), db: Session = Depends(get_db)):
+    if not db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:event"), {"event": event_id}).first():
+        raise HTTPException(404, "Evento no encontrado.")
+    return _tournament_snapshot(db,event_id,category_id)
+
+
+@router.post("/events/{event_id}/tournament")
+def initialize_tournament(event_id: int, payload: TournamentInitializeInput,
+                          user=Depends(require_roles(*STAFF)), db: Session = Depends(get_db)):
+    if not db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:event"), {"event": event_id}).first():
+        raise HTTPException(404, "Evento no encontrado.")
+    if not db.execute(text("""
+      SELECT 1 FROM dbo.EventCategories WHERE EventId=:event AND CategoryId=:category
+    """), {"event": event_id, "category": payload.category_id}).first():
+        raise HTTPException(422, "La categoría no pertenece a este evento.")
+    group_codes = {code for code in "ABCD"}
+    supplied_groups = {team.group_code for team in payload.teams}
+    if supplied_groups != group_codes:
+        raise HTTPException(422, "Asigne al menos un equipo a cada grupo (A, B, C y D).")
+    team_ids = [team.team_id for team in payload.teams]
+    robot_ids = [team.robot_id for team in payload.teams]
+    if len(set(team_ids)) != len(team_ids) or len(set(robot_ids)) != len(robot_ids):
+        raise HTTPException(422, "No repita equipos ni robots en la asignación de grupos.")
+    try:
+        existing = db.execute(text("""
+          SELECT CurrentPhase FROM dbo.TournamentPhaseState WITH (UPDLOCK,HOLDLOCK)
+          WHERE EventId=:event AND CategoryId=:category
+        """), {"event": event_id, "category": payload.category_id}).scalar_one_or_none()
+        if existing:
+            raise HTTPException(409, "El torneo de esta categoría ya fue configurado. Use la acción de reinicio solo antes de iniciar la puntuación.")
+        assigned: dict[str, list[int]] = {code: [] for code in group_codes}
+        for team in payload.teams:
+            approved = db.execute(text("""
+              SELECT 1 FROM dbo.Registrations r
+              JOIN dbo.RegistrationStatuses st ON st.StatusId=r.StatusId AND st.Code='APPROVED'
+              WHERE r.EventId=:event AND r.CategoryId=:category AND r.TeamId=:team AND r.RobotId=:robot
+            """), {"event": event_id, "category": payload.category_id,
+                  "team": team.team_id, "robot": team.robot_id}).first()
+            if not approved:
+                raise HTTPException(422, "Cada equipo y robot debe tener inscripción aprobada en esta categoría.")
+            assigned[team.group_code].append(team.team_id)
+            db.execute(text("""
+              INSERT dbo.TournamentTeamGroups(EventId,CategoryId,TeamId,RobotId,GroupCode,AssignedByUserId)
+              VALUES(:event,:category,:team,:robot,:group,:actor)
+            """), {"event": event_id, "category": payload.category_id,
+                  "team": team.team_id, "robot": team.robot_id,
+                  "group": team.group_code, "actor": user["user_id"]})
+
+        expected_group_sizes = {"A": 5, "B": 5, "C": 5, "D": 6}
+        actual_group_sizes = {code: len(team_ids) for code, team_ids in assigned.items()}
+        if actual_group_sizes != expected_group_sizes:
+            raise HTTPException(422, "Para el torneo del jueves se requieren 5 equipos en A, B y C, y 6 en D.")
+
+        queues = {code: _round_robin_pairs(assigned[code]) for code in "ABCD"}
+        frame_count = max(len(queue) for queue in queues.values())
+        for frame in range(frame_count):
+            round_id = _ensure_tournament_round(db,event_id,payload.category_id,
+                                                 f"Grupos · Jornada {frame+1}",user["user_id"])
+            for dohyo, code in enumerate("ABCD", 1):
+                if frame >= len(queues[code]):
+                    continue
+                left, right = queues[code][frame]
+                robots = {item.team_id: item.robot_id for item in payload.teams}
+                _create_tournament_match(db,event_id,payload.category_id,round_id,dohyo,
+                    "GROUP",dohyo,[(left,robots[left]),(right,robots[right])],user["user_id"],
+                    group_code=code,score_to_win=2)
+        db.execute(text("""
+          INSERT dbo.TournamentPhaseState(EventId,CategoryId,CurrentPhase,CreatedByUserId,UpdatedByUserId)
+          VALUES(:event,:category,'GROUP',:actor,:actor)
+        """), {"event": event_id, "category": payload.category_id, "actor": user["user_id"]})
+        db.commit()
+        return _tournament_snapshot(db,event_id,payload.category_id)
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "No se pudo crear el calendario: revise equipos, categoría y rondas existentes.")
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/events/{event_id}/tournament/start")
+async def start_tournament(event_id: int, category_id: int = Query(gt=0),
+                           user=Depends(require_roles(*STAFF))):
+    def apply():
+        db = SessionLocal()
+        try:
+            state = db.execute(text("""
+              SELECT CurrentPhase FROM dbo.TournamentPhaseState WITH (UPDLOCK,HOLDLOCK)
+              WHERE EventId=:event AND CategoryId=:category
+            """), {"event": event_id, "category": category_id}).scalar_one_or_none()
+            if state is None:
+                raise HTTPException(404, "Primero configure los grupos y el calendario.")
+            if state != "GROUP":
+                raise HTTPException(409, "El torneo ya avanzó de la fase de grupos.")
+            current = db.execute(text("""
+              SELECT ac.MatchId,m.MatchStatus,m.StageCode FROM dbo.ActiveCombat ac
+              JOIN dbo.CompetitionMatches m ON m.MatchId=ac.MatchId
+              WHERE ac.ActiveCombatId=1
+            """)).first()
+            if current and current.StageCode == "MANUAL" and current.MatchStatus == "LIVE":
+                raise HTTPException(409, "Finalice el combate manual activo antes de iniciar las cuatro pistas del torneo.")
+            first_ids=[]
+            for dohyo, code in enumerate("ABCD",1):
+                match_id=db.execute(text("""
+                  SELECT TOP (1) m.MatchId FROM dbo.CompetitionMatches m
+                  JOIN dbo.CompetitionRounds r ON r.RoundId=m.RoundId
+                  WHERE r.EventId=:event AND r.CategoryId=:category AND m.StageCode='GROUP'
+                    AND m.GroupCode=:group AND m.MatchStatus='SCHEDULED'
+                  ORDER BY r.RoundNumber,m.MatchNumber
+                """), {"event":event_id,"category":category_id,"group":code}).scalar_one_or_none()
+                if match_id is not None:
+                    db.execute(text("UPDATE dbo.CompetitionMatches SET MatchStatus='LIVE' WHERE MatchId=:id"),{"id":match_id})
+                    _set_live_dohyo(db,event_id,category_id,dohyo,int(match_id),user["user_id"])
+                    first_ids.append(int(match_id))
+            if not first_ids:
+                raise HTTPException(409, "No hay encuentros de grupo pendientes.")
+            _write_event_status(db,event_id,"LIVE",user["user_id"],"Inicio de fase de grupos")
+            _set_primary_live_match(db,first_ids[0],user["user_id"])
+            snapshot=_current_combat_snapshot(db)
+            db.commit()
+            return snapshot
+        except HTTPException:
+            db.rollback(); raise
+        finally:
+            db.close()
+    snapshot=await asyncio.to_thread(apply)
+    await live_combat_connections.broadcast(snapshot)
+    return snapshot
+
+
+@router.post("/events/{event_id}/tournament/matches/{match_id}/yukos")
+async def award_yuko(event_id: int, match_id: int, payload: YukoInput,
+                     category_id: int = Query(gt=0), user=Depends(require_roles(*STAFF))):
+    def apply():
+        db=SessionLocal()
+        try:
+            match=db.execute(text("""
+              SELECT m.MatchId,m.RoundId,m.MatchStatus,m.StageCode,m.ScoreToWin,m.GroupCode,
+                m.WinnerTeamId,
+                cr.EventId,e.CompetitionStatus
+              FROM dbo.CompetitionMatches m WITH (UPDLOCK,HOLDLOCK)
+              JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+              JOIN dbo.Events e ON e.EventId=cr.EventId
+              WHERE m.MatchId=:match AND cr.EventId=:event AND cr.CategoryId=:category
+            """), {"match":match_id,"event":event_id,"category":category_id}).mappings().first()
+            if match is None: raise HTTPException(404,"Encuentro no encontrado.")
+            editable_finished_group = (match["MatchStatus"] == "FINISHED"
+                                       and match["StageCode"] == "GROUP"
+                                       and payload.points_delta < 0)
+            if (match["MatchStatus"] != "LIVE" and not editable_finished_group) or match["CompetitionStatus"]!="LIVE":
+                raise HTTPException(409,"El encuentro debe estar en vivo para registrar un Yuko; solo se permite corregir Yukos en un grupo finalizado.")
+            if not db.execute(text("""
+              SELECT 1 FROM dbo.LiveDohyoMatches WHERE EventId=:event AND CategoryId=:category AND MatchId=:match
+            """), {"event":event_id,"category":category_id,"match":match_id}).first():
+                raise HTTPException(409,"El encuentro no está asignado a un dohyo en vivo.")
+            teams=db.execute(text("""SELECT TeamId FROM dbo.CompetitionMatchTeams
+              WHERE MatchId=:match ORDER BY TeamPosition"""),{"match":match_id}).scalars().all()
+            if payload.team_id not in teams: raise HTTPException(422,"El equipo no participa en este encuentro.")
+            totals={int(row.TeamId):int(row.Points or 0) for row in db.execute(text("""
+              SELECT TeamId,SUM(CONVERT(BIGINT,PointsDelta)) AS Points FROM dbo.ScoreEntries
+              WHERE MatchId=:match GROUP BY TeamId
+            """),{"match":match_id}).all()}
+            totals={team:int(totals.get(team,0)) for team in teams}
+            if totals[payload.team_id] + payload.points_delta < 0:
+                raise HTTPException(409,"El marcador no puede quedar por debajo de cero Yukos.")
+            if payload.points_delta > 0 and totals[payload.team_id]>=int(match["ScoreToWin"]):
+                raise HTTPException(409,"Ese equipo ya alcanzó los Yukos necesarios para ganar.")
+            db.execute(text("""
+              INSERT dbo.ScoreEntries(EventId,CategoryId,TeamId,RoundId,MatchId,PointsDelta,
+                Reason,IdempotencyKey,CreatedByUserId)
+              VALUES(:event,:category,:team,:round,:match,:delta,:reason,:key,:actor)
+            """), {"event":event_id,"category":category_id,"team":payload.team_id,
+                  "round":match["RoundId"],"match":match_id,"delta":payload.points_delta,
+                  "reason":"Yuko otorgado por el administrador" if payload.points_delta > 0 else "Corrección administrativa de Yuko",
+                  "key":uuid4(),"actor":user["user_id"]})
+            totals[payload.team_id]+=payload.points_delta
+            if payload.points_delta < 0 and match["MatchStatus"] == "FINISHED":
+                winner_points = totals.get(int(match["WinnerTeamId"] or 0), 0)
+                if winner_points < int(match["ScoreToWin"]):
+                    db.execute(text("""
+                      UPDATE dbo.CompetitionMatches SET MatchStatus='LIVE',WinnerTeamId=NULL,LoserTeamId=NULL
+                      WHERE MatchId=:match
+                    """), {"match":match_id})
+                    if match["StageCode"] != "GROUP":
+                        db.execute(text("""
+                          UPDATE dbo.TournamentPhaseState SET CurrentPhase=:phase,UpdatedByUserId=:actor,
+                            UpdatedAt=SYSUTCDATETIME() WHERE EventId=:event AND CategoryId=:category
+                        """), {"phase":match["StageCode"],"actor":user["user_id"],"event":event_id,"category":category_id})
+            if payload.points_delta > 0 and totals[payload.team_id]>=int(match["ScoreToWin"]):
+                loser=next(team for team in teams if team!=payload.team_id)
+                db.execute(text("""
+                  UPDATE dbo.CompetitionMatches SET MatchStatus='FINISHED',WinnerTeamId=:winner,
+                    LoserTeamId=:loser WHERE MatchId=:match
+                """), {"winner":payload.team_id,"loser":loser,"match":match_id})
+                if match["StageCode"]!="GROUP":
+                    _progress_tournament(db,event_id,category_id,user["user_id"])
+            db.execute(text("""
+              UPDATE dbo.ActiveCombat SET UpdatedByUserId=:actor,UpdatedAt=SYSUTCDATETIME()
+              WHERE ActiveCombatId=1 AND MatchId=:match
+            """), {"actor":user["user_id"],"match":match_id})
+            snapshot=_current_combat_snapshot(db)
+            db.commit()
+            return snapshot
+        except HTTPException:
+            db.rollback(); raise
+        except IntegrityError:
+            db.rollback(); raise HTTPException(409,"No se pudo registrar el Yuko por un conflicto de datos.")
+        finally: db.close()
+    snapshot=await asyncio.to_thread(apply)
+    await live_combat_connections.broadcast(snapshot)
+    return snapshot
+
+
+@router.post("/events/{event_id}/tournament/dohyos/{dohyo_number}/advance")
+async def advance_dohyo(event_id: int, dohyo_number: int, category_id: int = Query(gt=0),
+                        user=Depends(require_roles(*STAFF))):
+    if dohyo_number not in range(1,5): raise HTTPException(422,"El dohyo debe ser del 1 al 4.")
+    def apply():
+        db=SessionLocal()
+        try:
+            current=db.execute(text("""
+              SELECT m.MatchId,m.MatchStatus,m.StageCode,m.GroupCode FROM dbo.LiveDohyoMatches l
+              JOIN dbo.CompetitionMatches m ON m.MatchId=l.MatchId
+              WHERE l.EventId=:event AND l.CategoryId=:category AND l.DohyoNumber=:dohyo
+            """), {"event":event_id,"category":category_id,"dohyo":dohyo_number}).mappings().first()
+            if current is None: raise HTTPException(404,"Este dohyo no tiene un encuentro seleccionado.")
+            if current["MatchStatus"]!="FINISHED": raise HTTPException(409,"El encuentro debe terminar antes de avanzar.")
+            if current["StageCode"]!="GROUP": raise HTTPException(409,"Las fases eliminatorias avanzan automáticamente al terminar todos sus combates.")
+            next_match=db.execute(text("""
+              SELECT TOP (1) m.MatchId FROM dbo.CompetitionMatches m
+              JOIN dbo.CompetitionRounds r ON r.RoundId=m.RoundId
+              WHERE r.EventId=:event AND r.CategoryId=:category AND m.StageCode='GROUP'
+                AND m.GroupCode=:group AND m.MatchStatus='SCHEDULED'
+              ORDER BY r.RoundNumber,m.MatchNumber
+            """), {"event":event_id,"category":category_id,"group":current["GroupCode"]}).scalar_one_or_none()
+            if next_match is None:
+                _set_live_dohyo(db,event_id,category_id,dohyo_number,None,user["user_id"])
+                _progress_tournament(db,event_id,category_id,user["user_id"])
+            else:
+                db.execute(text("UPDATE dbo.CompetitionMatches SET MatchStatus='LIVE' WHERE MatchId=:id"),{"id":next_match})
+                _set_live_dohyo(db,event_id,category_id,dohyo_number,int(next_match),user["user_id"])
+            primary=db.execute(text("""
+              SELECT TOP (1) MatchId FROM dbo.LiveDohyoMatches
+              WHERE EventId=:event AND CategoryId=:category ORDER BY DohyoNumber
+            """), {"event":event_id,"category":category_id}).scalar_one_or_none()
+            if primary is not None: _set_primary_live_match(db,int(primary),user["user_id"])
+            snapshot=_current_combat_snapshot(db)
+            db.commit()
+            return snapshot
+        except HTTPException:
+            db.rollback(); raise
+        finally: db.close()
+    snapshot=await asyncio.to_thread(apply)
+    await live_combat_connections.broadcast(snapshot)
+    return snapshot
+
+
 def _leaderboard(db: Session, event_id: int, category_id: int | None):
     rows = db.execute(text("""
       SELECT r.CategoryId AS category_id,c.Name AS category,t.TeamId AS team_id,t.Name AS team,
@@ -119,7 +699,12 @@ def _broadcast_active_combat_if(db: Session, *, event_id: int | None = None,
       JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
       WHERE ac.ActiveCombatId=1
     """)).first()
-    if current and ((match_id is not None and current.MatchId == match_id)
+    is_live_dohyo = False
+    if match_id is not None:
+        is_live_dohyo = bool(db.execute(text("""
+          SELECT 1 FROM dbo.LiveDohyoMatches WHERE MatchId=:match
+        """), {"match": match_id}).first())
+    if current and ((match_id is not None and (current.MatchId == match_id or is_live_dohyo))
                     or (event_id is not None and current.EventId == event_id)):
         live_combat_connections.broadcast_from_sync_route(_current_combat_snapshot(db))
 
@@ -512,7 +1097,7 @@ def _current_combat_snapshot(db: Session) -> dict:
                "institucion": first["institution_name"], "puntos": first_points}
     robot_b = {"nombre": decrypt_text(second["robot_name"]),
                "institucion": second["institution_name"], "puntos": second_points}
-    return {
+    snapshot = {
         "active": display_status in ("PROGRAMADO", "EN_VIVO", "PAUSADO"),
         "id": f"COMB-{first['match_number']:02d}",
         "id_combate": f"COMB-{first['match_number']:02d}",
@@ -540,6 +1125,11 @@ def _current_combat_snapshot(db: Session) -> dict:
         "updated_at": updated_at.isoformat() if updated_at else None,
         "ultimaActualizacion": updated_at.strftime("%H:%M") if updated_at else "--:--",
     }
+    tournament = _tournament_snapshot(db, int(first["event_id"]), int(first["category_id"]))
+    if tournament["phase"] != "NOT_CONFIGURED":
+        snapshot.update({"tournament": tournament, "boards": tournament["boards"],
+                         "fase": tournament["phase"], "combates": tournament["matches"]})
+    return snapshot
 
 
 def _load_current_combat_snapshot() -> dict:
@@ -958,8 +1548,15 @@ def _load_live_snapshot(event_id: int):
         state = db.execute(text("SELECT CompetitionStatus FROM dbo.Events WHERE EventId=:id"),
                            {"id": event_id}).scalar_one_or_none()
         items = _leaderboard(db, event_id, None)
-        return {"event_id": event_id, "status": state,
-                "items": [{k: v for k, v in item.items() if k != "updated_at"} for item in items]}
+        snapshot = {"event_id": event_id, "status": state,
+                    "items": [{k: v for k, v in item.items() if k != "updated_at"} for item in items]}
+        tournament = db.execute(text("""
+          SELECT TOP (1) CategoryId FROM dbo.TournamentPhaseState
+          WHERE EventId=:event ORDER BY UpdatedAt DESC,CategoryId
+        """), {"event": event_id}).scalar_one_or_none()
+        if tournament is not None:
+            snapshot["tournament"] = _tournament_snapshot(db,event_id,int(tournament))
+        return snapshot
     finally:
         db.close()
 

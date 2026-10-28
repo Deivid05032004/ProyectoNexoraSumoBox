@@ -7,6 +7,7 @@ import {
   iniciarPolling,
   obtenerTablaPosiciones,
 } from './services/resultadosApi';
+import TorneoEnVivo from './TorneoEnVivo';
 import './Resultados.css';
 
 function FullscreenPanel({ className = '', label, children }) {
@@ -244,6 +245,10 @@ export default function Resultados() {
         </div>
       </div>
     );
+  }
+
+  if (combate.tournament && combate.tournament.phase !== 'NOT_CONFIGURED') {
+    return <TorneoEnVivo tournament={combate.tournament} eventName={combate.event_name || combate.torneo} />;
   }
 
   const esGanadorA = combate.ganador && combate.ganador !== 'No definido' && combate.ganador === combate.robotA.nombre;

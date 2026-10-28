@@ -63,6 +63,7 @@ MIGRATIONS = [
     ROOT / "database/scripts/34_event_management_audit.sql",
     ROOT / "database/scripts/35_schedule_official_2026_event.sql",
     ROOT / "database/scripts/36_admin_password_change_required.sql",
+    ROOT / "database/scripts/37_tournament_groups_and_live_dohyos.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",
