@@ -65,6 +65,11 @@ MIGRATIONS = [
     ROOT / "database/scripts/35_schedule_official_2026_event.sql",
     ROOT / "database/scripts/36_admin_password_change_required.sql",
     ROOT / "database/scripts/37_tournament_groups_and_live_dohyos.sql",
+    ROOT / "database/scripts/38_enable_official_2026_registrations.sql",
+    ROOT / "database/scripts/39_tournament_group_management.sql",
+    ROOT / "database/scripts/40_tournament_match_group_relation.sql",
+    ROOT / "database/scripts/41_flexible_tournament_groups_and_brackets.sql",
+    ROOT / "database/scripts/42_robot_names_unique_per_team.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",

@@ -142,10 +142,14 @@ def create_registration(payload: RegistrationCreate,
     if db.execute(text("SELECT 1 FROM dbo.Institutions WHERE InstitutionId=:id AND IsActive=1"),
                   {"id": team}).first() is None:
         raise HTTPException(status_code=422, detail="La institución del equipo no existe o está inactiva.")
-    robot = db.execute(text("SELECT 1 FROM dbo.Robots WHERE RobotId=:id AND OwnerUserId=:owner"),
-                       {"id": payload.robot_id, "owner": user["user_id"]}).first()
+    robot = db.execute(text("""
+        SELECT TeamId FROM dbo.Robots
+        WHERE RobotId=:id AND OwnerUserId=:owner
+    """), {"id": payload.robot_id, "owner": user["user_id"]}).scalar_one_or_none()
     if robot is None:
         raise HTTPException(status_code=404, detail="Robot no encontrado.")
+    if robot != payload.team_id:
+        raise HTTPException(status_code=422, detail="El robot seleccionado no pertenece al equipo de esta inscripción.")
 
     # Bind an expanding parameter to keep participant IDs parameterized.
     from sqlalchemy import bindparam

@@ -13,7 +13,7 @@
 
 .registration-progress-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--registration-muted); font-size: 13px; }
 .registration-progress-heading strong { color: var(--registration-ink); }
-.registration-progress ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.registration-progress ol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
 .registration-progress li { display: flex; min-width: 0; align-items: center; gap: 8px; color: #687588; font-size: 13px; font-weight: 650; }
 .registration-progress li > span { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border: 1px solid #cbd3df; border-radius: 50%; background: #fff; color: #556170; font-size: 12px; }
 .registration-progress li.is-current { color: var(--registration-accent); }

@@ -17,7 +17,19 @@ const MENSAJES_HTTP = {
 export function mensajeErrorApi(status, detail) {
   const isKnownEnglishError = (message) => /^(Method Not Allowed|Not Found|Unauthorized|Forbidden|Conflict|Internal Server Error|Field required|Input should|String should|Value error|Request validation error)/i.test(message);
   if (Array.isArray(detail)) {
-    const messages = detail.map((item) => item.msg).filter(Boolean);
+    const labels = { name: 'nombre del evento', edition_year: 'año de edición', registration_start: 'inicio de inscripciones', registration_end: 'cierre de inscripciones', starts_at: 'inicio del evento', ends_at: 'fin del evento', venue: 'lugar o modalidad', description: 'descripción', category_id: 'categoría', min_participants: 'mínimo de participantes', max_participants: 'máximo de participantes', min_coaches: 'mínimo de coaches', max_coaches: 'máximo de coaches', amount: 'tarifa', valid_from: 'inicio de vigencia', valid_until: 'fin de vigencia' };
+    const messages = detail.map((item) => {
+      const field = [...(item.loc || [])].reverse().find((part) => typeof part === 'string' && !['body', 'query', 'path'].includes(part));
+      const label = labels[field] || (field ? `campo «${field.replaceAll('_', ' ')}»` : 'formulario');
+      if (item.type === 'missing') return `Completa el campo ${label}.`;
+      if (item.type === 'int_parsing' || item.type === 'float_parsing' || item.type === 'date_from_datetime_parsing' || item.type === 'datetime_from_date_parsing') return `El campo ${label} tiene un formato no válido.`;
+      if (item.type === 'greater_than_equal' || item.type === 'greater_than') return `El campo ${label} está por debajo del mínimo permitido.`;
+      if (item.type === 'less_than_equal' || item.type === 'less_than') return `El campo ${label} supera el máximo permitido.`;
+      if (item.type === 'string_too_short') return `El campo ${label} es demasiado corto.`;
+      if (item.type === 'string_too_long') return `El campo ${label} supera la longitud permitida.`;
+      if (item.type === 'extra_forbidden') return `El formulario envió un campo inesperado (${label}). Actualiza la página e inténtalo de nuevo.`;
+      return item.msg && !isKnownEnglishError(item.msg) ? item.msg : `Revisa el campo ${label}; el valor no es válido.`;
+    }).filter(Boolean);
     if (messages.length && messages.every((message) => !isKnownEnglishError(message))) return messages.join(' ');
   } else if (detail && typeof detail === 'object' && typeof detail.message === 'string') {
     return detail.message;

@@ -103,10 +103,33 @@ def create_event(payload: EventInput,user=Depends(require_roles("ADMIN")),db:Ses
 
 @router.get("/admin/events/{event_id}")
 def get_admin_event(event_id:int,_user=Depends(require_roles("ADMIN")),db:Session=Depends(get_db)):
-    row=db.execute(text("""SELECT EventId AS id,Name AS name,EditionYear AS edition_year,
-      Description AS description,Venue AS venue,RegistrationStart AS registration_start,
-      RegistrationEnd AS registration_end,StartsAt AS starts_at,EndsAt AS ends_at,
-      IsActive AS is_active,CompetitionStatus AS status FROM dbo.Events WHERE EventId=:id"""),
+    row=db.execute(text("""SELECT e.EventId AS id,e.Name AS name,e.EditionYear AS edition_year,
+      e.Description AS description,e.Venue AS venue,e.RegistrationStart AS registration_start,
+      e.RegistrationEnd AS registration_end,e.StartsAt AS starts_at,e.EndsAt AS ends_at,
+      e.IsActive AS is_active,e.CompetitionStatus AS status,
+      COALESCE(cfg.IsEnabled,CAST(1 AS bit)) AS registration_enabled,
+      CAST(CASE WHEN EXISTS (
+        SELECT 1 FROM dbo.EventCategories ec
+        JOIN dbo.Categories c ON c.CategoryId=ec.CategoryId AND c.IsActive=1
+        JOIN dbo.Tariffs t ON t.EventId=ec.EventId AND t.CategoryId=ec.CategoryId
+          AND t.IsActive=1
+          AND t.ValidFrom<=CONVERT(date,GETDATE())
+          AND (t.ValidUntil IS NULL OR t.ValidUntil>=CONVERT(date,GETDATE()))
+        WHERE ec.EventId=e.EventId AND ec.IsActive=1
+      ) THEN 1 ELSE 0 END AS bit) AS has_active_category_tariff,
+      CAST(CASE WHEN e.IsActive=1 AND COALESCE(cfg.IsEnabled,1)=1
+        AND (e.RegistrationStart IS NULL OR e.RegistrationStart<=CONVERT(date,GETDATE()))
+        AND (e.RegistrationEnd IS NULL OR e.RegistrationEnd>=CONVERT(date,GETDATE()))
+        AND EXISTS (
+          SELECT 1 FROM dbo.EventCategories ec
+          JOIN dbo.Categories c ON c.CategoryId=ec.CategoryId AND c.IsActive=1
+          JOIN dbo.Tariffs t ON t.EventId=ec.EventId AND t.CategoryId=ec.CategoryId
+            AND t.IsActive=1 AND t.ValidFrom<=CONVERT(date,GETDATE())
+            AND (t.ValidUntil IS NULL OR t.ValidUntil>=CONVERT(date,GETDATE()))
+          WHERE ec.EventId=e.EventId AND ec.IsActive=1
+        ) THEN 1 ELSE 0 END AS bit) AS registration_open
+      FROM dbo.Events e LEFT JOIN dbo.EventRegistrationConfigs cfg ON cfg.EventId=e.EventId
+      WHERE e.EventId=:id"""),
       {"id":event_id}).mappings().first()
     if not row: raise HTTPException(404,"Evento no encontrado.")
     result=dict(row)
@@ -148,11 +171,37 @@ def update_event(event_id:int,payload:EventInput,user=Depends(require_roles("ADM
 @router.patch("/admin/events/{event_id}/status")
 def transition_event(event_id:int,payload:EventStatusInput,user=Depends(require_roles("ADMIN")),db:Session=Depends(get_db)):
     try:
-        old=db.execute(text("SELECT CompetitionStatus FROM dbo.Events WITH (UPDLOCK,HOLDLOCK) WHERE EventId=:id"),{"id":event_id}).scalar_one_or_none()
-        if old is None: raise HTTPException(404,"Evento no encontrado.")
+        event=db.execute(text("""SELECT e.CompetitionStatus AS status,e.RegistrationStart AS registration_start,
+          e.RegistrationEnd AS registration_end,COALESCE(cfg.IsEnabled,CAST(1 AS bit)) AS registration_enabled
+          FROM dbo.Events e WITH (UPDLOCK,HOLDLOCK)
+          LEFT JOIN dbo.EventRegistrationConfigs cfg ON cfg.EventId=e.EventId
+          WHERE e.EventId=:id"""),{"id":event_id}).mappings().first()
+        if event is None: raise HTTPException(404,"Evento no encontrado.")
+        old=event["status"]
         if payload.status==old: return {"event_id":event_id,"status":old}
         if payload.status not in TRANSITIONS.get(old,set()):
             raise HTTPException(409,f"Transición no permitida: {old} → {payload.status}.")
+        if payload.status=="SCHEDULED":
+            if not event["registration_enabled"]:
+                raise HTTPException(409,"Habilita las inscripciones antes de programar el evento.")
+            registration_already_closed=db.execute(text("""SELECT CAST(CASE WHEN :end_date IS NOT NULL
+              AND :end_date<CONVERT(date,GETDATE()) THEN 1 ELSE 0 END AS bit)"""),
+              {"end_date":event["registration_end"]}).scalar_one()
+            if registration_already_closed:
+                raise HTTPException(409,"La fecha de cierre de inscripciones ya pasó. Actualízala antes de programar.")
+            configured=db.execute(text("""SELECT TOP (1) 1
+              FROM dbo.Events e
+              JOIN dbo.EventCategories ec ON ec.EventId=e.EventId
+              JOIN dbo.Categories c ON c.CategoryId=ec.CategoryId AND c.IsActive=1
+              JOIN dbo.Tariffs t ON t.EventId=ec.EventId AND t.CategoryId=ec.CategoryId AND t.IsActive=1
+              WHERE e.EventId=:id AND ec.EventId=e.EventId AND ec.IsActive=1
+                AND (t.ValidUntil IS NULL OR t.ValidUntil>=CONVERT(date,GETDATE()))
+                AND (e.RegistrationStart IS NULL OR t.ValidUntil IS NULL
+                     OR t.ValidUntil>=e.RegistrationStart)
+                AND (e.RegistrationEnd IS NULL OR t.ValidFrom<=e.RegistrationEnd)
+              """), {"id":event_id}).first()
+            if configured is None:
+                raise HTTPException(409,"Antes de programar, asocia una categoría activa y configura una tarifa vigente para el periodo de inscripción.")
         db.execute(text("UPDATE dbo.Events SET CompetitionStatus=:status,IsActive=CASE WHEN :status IN ('FINISHED','CANCELLED') THEN 0 WHEN :status='SCHEDULED' THEN 1 ELSE IsActive END WHERE EventId=:id"),
                    {"id":event_id,"status":payload.status})
         db.execute(text("""INSERT dbo.CompetitionEventStatusHistory(EventId,PreviousStatus,NewStatus,ChangedByUserId,Reason)
