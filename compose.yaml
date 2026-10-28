@@ -1,0 +1,199 @@
+name: uta-sumo
+
+services:
+  db:
+    image: uta-sumo-sqlserver:2022
+    build:
+      context: .
+      dockerfile: database/Dockerfile.sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: ${DB_EDITION:?Configura DB_EDITION; Developer solo para pruebas}
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Configura MSSQL_SA_PASSWORD en .env}
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      - sqlserver-backups:/var/opt/mssql/backups
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD", "/opt/mssql-tools18/bin/sqlcmd", "-S", "localhost", "-U", "sa", "-P", "$${MSSQL_SA_PASSWORD}", "-C", "-Q", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 45s
+    restart: unless-stopped
+    stop_grace_period: 60s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/uta_sumo_api/Dockerfile
+    environment:
+      DB_SERVER: db
+      DB_NAME: ${DB_NAME:-UTA_SUMO_ROBOTICS_CUP}
+      DB_AUTH_MODE: sql
+      DB_DRIVER: ODBC Driver 18 for SQL Server
+      DB_TRUST_SERVER_CERTIFICATE: "yes"
+      DB_USERNAME: ${DB_USERNAME:?Configura DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD:?Configura DB_PASSWORD}
+      MIGRATION_DB_USERNAME: ${MIGRATION_DB_USERNAME:-sa}
+      MIGRATION_DB_PASSWORD: ${MSSQL_SA_PASSWORD:?Configura MSSQL_SA_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY:?Configura SECRET_KEY}
+      PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:?Configura PII_ENCRYPTION_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      EMAIL_CHECK_DELIVERABILITY: ${EMAIL_CHECK_DELIVERABILITY:-true}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      AUTO_BOOTSTRAP_DEMO_ACCOUNTS: "false"
+      RECEIPT_STORAGE_DIR: /app/storage/receipts
+      MAX_RECEIPT_BYTES: ${MAX_RECEIPT_BYTES:-5242880}
+      REGULATION_STORAGE_DIR: /app/storage/regulations
+      MAX_REGULATION_BYTES: ${MAX_REGULATION_BYTES:-20971520}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-UTA SUMO ROBOTICS CUP}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+    command: ["python", "scripts/migrate.py"]
+    volumes:
+      - app-storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - data
+    restart: "no"
+
+  backup:
+    image: uta-sumo-sqlserver:2022
+    user: "0:0"
+    entrypoint: ["/bin/bash", "/backup_loop.sh"]
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Configura MSSQL_SA_PASSWORD}
+      DB_NAME: ${DB_NAME:-UTA_SUMO_ROBOTICS_CUP}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      HOME: /tmp
+      TMPDIR: /tmp
+    volumes:
+      - ./database/docker_backup_loop.sh:/backup_loop.sh:ro
+      - sqlserver-backups:/var/opt/mssql/backups
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/uta_sumo_api/Dockerfile
+    environment:
+      DB_SERVER: db
+      DB_NAME: ${DB_NAME:-UTA_SUMO_ROBOTICS_CUP}
+      DB_AUTH_MODE: sql
+      DB_DRIVER: ODBC Driver 18 for SQL Server
+      DB_TRUST_SERVER_CERTIFICATE: "yes"
+      DB_USERNAME: ${DB_USERNAME:?Configura DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD:?Configura DB_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY:?Configura SECRET_KEY}
+      PII_ENCRYPTION_KEY: ${PII_ENCRYPTION_KEY:?Configura PII_ENCRYPTION_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      EMAIL_CHECK_DELIVERABILITY: ${EMAIL_CHECK_DELIVERABILITY:-true}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      AUTO_BOOTSTRAP_DEMO_ACCOUNTS: "false"
+      RECEIPT_STORAGE_DIR: /app/storage/receipts
+      MAX_RECEIPT_BYTES: ${MAX_RECEIPT_BYTES:-5242880}
+      REGULATION_STORAGE_DIR: /app/storage/regulations
+      MAX_REGULATION_BYTES: ${MAX_REGULATION_BYTES:-20971520}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-UTA SUMO ROBOTICS CUP}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+    volumes:
+      - app-storage:/app/storage
+    expose:
+      - "8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - app
+      - data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: frontend/uta-sumo-web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+        VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  https:
+    image: caddy:2-alpine
+    profiles: ["production"]
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    networks:
+      - app
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  sqlserver-data:
+  sqlserver-backups:
+  app-storage:
+  caddy-data:
+  caddy-config:
+
+networks:
+  app:
+  data:
+    internal: true

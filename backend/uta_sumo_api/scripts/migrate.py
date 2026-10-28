@@ -143,7 +143,7 @@ def _ensure_runtime_principal(cursor) -> None:
     escaped_password = password.replace("'", "''")
     database = _database_identifier()
     cursor.execute(f"IF SUSER_ID(N'{escaped_username}') IS NULL CREATE LOGIN {login} WITH PASSWORD=N'{escaped_password}', CHECK_POLICY=ON; ELSE ALTER LOGIN {login} WITH PASSWORD=N'{escaped_password}', CHECK_POLICY=ON;")
-    cursor.execute(f"USE {database}; IF USER_ID(N'{escaped_username}') IS NULL CREATE USER {login} FOR LOGIN {login};")
+    cursor.execute(f"USE {database}; IF USER_ID(N'{escaped_username}') IS NULL CREATE USER {login} FOR LOGIN {login}; ELSE ALTER USER {login} WITH LOGIN={login};")
     cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM sys.database_role_members drm JOIN sys.database_principals r ON r.principal_id=drm.role_principal_id JOIN sys.database_principals u ON u.principal_id=drm.member_principal_id WHERE r.name=N'db_datareader' AND u.name=N'{escaped_username}') ALTER ROLE [db_datareader] ADD MEMBER {login};")
     cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM sys.database_role_members drm JOIN sys.database_principals r ON r.principal_id=drm.role_principal_id JOIN sys.database_principals u ON u.principal_id=drm.member_principal_id WHERE r.name=N'db_datawriter' AND u.name=N'{escaped_username}') ALTER ROLE [db_datawriter] ADD MEMBER {login};")
 
