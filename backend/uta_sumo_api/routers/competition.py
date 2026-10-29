@@ -119,6 +119,8 @@ class TournamentInitializeInput(BaseModel):
 
 class TournamentFromGroupsInput(BaseModel):
     category_id: int = Field(gt=0)
+    mode: str = Field(default="RANDOM", pattern="^(RANDOM|MANUAL)$")
+    manual_matches: list[dict] = Field(default_factory=list, max_length=512)
 
 
 class YukoInput(BaseModel):
@@ -383,6 +385,7 @@ def _tournament_snapshot(db: Session, event_id: int, category_id: int) -> dict:
                    and not unresolved_ties and next_phase is not None)
     return {"event_id": event_id, "category_id": category_id, "phase": phase,
             "groups": teams_by_group, "group_names": group_names, "matches": matches, "boards": boards,
+            "podium": _build_podium(matches),
             "unresolved_qualifying_ties": unresolved_ties, "phase_progress": progress,
             "next_phase": next_phase, "can_advance": can_advance}
 
@@ -410,6 +413,37 @@ def _accumulate_group_results(team_rows: dict[int, dict], matches: list[dict]) -
             right["wins"] += 1
             right["points"] += 3
             left["losses"] += 1
+
+
+def _build_podium(matches: list[dict]) -> list[dict]:
+    """Build the official top three after the final and bronze match finish."""
+    final = next((match for match in matches
+                  if match["stage_code"] == "FINAL" and match["status"] == "FINISHED"
+                  and match["winner_team_id"]), None)
+    bronze = next((match for match in matches
+                   if match["stage_code"] == "THIRD_PLACE" and match["status"] == "FINISHED"
+                   and match["winner_team_id"]), None)
+    if final is None:
+        return []
+
+    def team_from_match(match: dict | None, team_id: int | None) -> dict | None:
+        if not match or not team_id:
+            return None
+        if team_id == match["team_id_a"]:
+            return {"team_id": team_id, "team": match["team_a"], "robot": match["robot_a"]}
+        if team_id == match["team_id_b"]:
+            return {"team_id": team_id, "team": match["team_b"], "robot": match["robot_b"]}
+        return None
+
+    podium = []
+    for position, team in (
+        (1, team_from_match(final, final["winner_team_id"])),
+        (2, team_from_match(final, final["loser_team_id"])),
+        (3, team_from_match(bronze, bronze["winner_team_id"])),
+    ):
+        if team:
+            podium.append({"position": position, **team})
+    return podium
 
 
 def _ensure_tournament_round(db: Session, event_id: int, category_id: int,
@@ -938,8 +972,31 @@ def initialize_tournament_from_groups(event_id: int, payload: TournamentFromGrou
                    "robot": robot_id, "code": group["group_code"], "actor": user["user_id"]})
 
         group_codes = sorted(assigned)
-        queues = {code: _round_robin_pairs([team_id for _, team_id, _ in assigned[code]])
-                  for code, rows in assigned.items()}
+        if payload.mode == "MANUAL":
+            if not payload.manual_matches:
+                raise HTTPException(422, "Agrega al menos un encuentro manual.")
+            team_group = {team_id: code for code, rows in assigned.items() for _, team_id, _ in rows}
+            queues = {code: [] for code in group_codes}
+            seen_pairs: set[tuple[str, int, int]] = set()
+            for item in payload.manual_matches:
+                try:
+                    code = str(item["group_code"]).strip().upper()
+                    left = int(item["team_id_a"])
+                    right = int(item["team_id_b"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise HTTPException(422, "Cada encuentro manual necesita grupo, equipo rojo y equipo azul.") from exc
+                if code not in assigned or left == right or team_group.get(left) != code or team_group.get(right) != code:
+                    raise HTTPException(422, "Los equipos del encuentro manual deben pertenecer al grupo seleccionado y ser distintos.")
+                pair = (code, min(left, right), max(left, right))
+                if pair in seen_pairs:
+                    raise HTTPException(409, "No repitas el mismo encuentro dentro de un grupo.")
+                seen_pairs.add(pair)
+                queues[code].append((left, right))
+            if any(not queues[code] for code in group_codes):
+                raise HTTPException(422, "Cada grupo necesita al menos un encuentro manual.")
+        else:
+            queues = {code: _round_robin_pairs([team_id for _, team_id, _ in assigned[code]])
+                      for code, rows in assigned.items()}
         robots = {team_id: robot_id for group in groups
                   for _, team_id, robot_id in assigned[str(group["group_code"])]}
         frame_count = max(map(len, queues.values()))

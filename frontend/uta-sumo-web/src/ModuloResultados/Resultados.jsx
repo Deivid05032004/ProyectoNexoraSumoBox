@@ -6,6 +6,7 @@ import {
   suscribirWebSocketCombate,
   iniciarPolling,
   obtenerTablaPosiciones,
+  suscribirWebSocketTorneo,
 } from './services/resultadosApi';
 import TorneoEnVivo from './TorneoEnVivo';
 import './Resultados.css';
@@ -63,6 +64,22 @@ export default function Resultados() {
 
   const ultimoEstadoRef = useRef('');
   const ultimoGanadorRef = useRef('');
+
+  // Canal específico del torneo: actualiza simultáneamente los cuatro Dohyos
+  // cuando el administrador suma puntos o cambia el combate activo.
+  useEffect(() => {
+    const eventId = combate?.event_id;
+    const categoryId = combate?.category_id || combate?.tournament?.category_id;
+    if (!eventId || !categoryId) return undefined;
+    const subscription = suscribirWebSocketTorneo(eventId, categoryId, (snapshot) => {
+      setCombate((actual) => actual ? {
+        ...actual,
+        tournament: snapshot.tournament,
+        boards: snapshot.tournament?.boards || snapshot.boards,
+      } : actual);
+    });
+    return () => subscription.stop();
+  }, [combate?.event_id, combate?.category_id, combate?.tournament?.category_id]);
 
   useEffect(() => {
     const eventId = combate?.event_id;

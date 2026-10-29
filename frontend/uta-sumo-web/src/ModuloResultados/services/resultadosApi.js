@@ -67,6 +67,41 @@ export function suscribirWebSocketCombate(onActualizacion) {
   };
 }
 
+/** Suscribe la transmisión completa del torneo (todos los Dohyos y grupos). */
+export function suscribirWebSocketTorneo(eventId, categoryId, onActualizacion) {
+  if (!eventId || !categoryId || typeof WebSocket === 'undefined') return { stop: () => {} };
+  let detenido = false;
+  let socket;
+  let retryTimer;
+  let intentos = 0;
+  const url = `${API_WS_BASE}/api/v1/events/${encodeURIComponent(eventId)}/live?category_id=${encodeURIComponent(categoryId)}`;
+
+  function conectar() {
+    if (detenido) return;
+    try {
+      socket = new WebSocket(url);
+      socket.onopen = () => { intentos = 0; };
+      socket.onmessage = (event) => {
+        try {
+          const snapshot = JSON.parse(event.data);
+          if (snapshot?.tournament) onActualizacion(snapshot);
+        } catch { /* El polling continúa como respaldo. */ }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (detenido) return;
+        intentos += 1;
+        retryTimer = setTimeout(conectar, Math.min(15000, 1000 * (2 ** Math.min(intentos - 1, 4))));
+      };
+    } catch {
+      if (!detenido) retryTimer = setTimeout(conectar, 5000);
+    }
+  }
+
+  conectar();
+  return { stop: () => { detenido = true; clearTimeout(retryTimer); socket?.close(); } };
+}
+
 export function obtenerConfiguracionCronometro() {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY_CRONOMETRO) || 'null');

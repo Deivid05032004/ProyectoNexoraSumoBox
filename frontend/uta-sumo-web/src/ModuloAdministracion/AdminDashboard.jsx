@@ -7,6 +7,7 @@ import AdminCreateForm from './AdminCreateForm';
 import RegistrationFormBuilder from './RegistrationFormBuilder';
 import EventManagement from './EventManagement';
 import AdminPasswordSettings from './AdminPasswordSettings';
+import InstitutionsManagement from './InstitutionsManagement';
 import NavIcon from '../components/NavIcon';
 import './AdminDashboard.css';
 
@@ -301,7 +302,7 @@ export default function AdminDashboard() {
               <span className="admin-sidebar-icon"><NavIcon name="security" /></span> Seguridad de la cuenta
             </button>}
             {!user?.must_change_password && <>
-            <button type="button" className="admin-sidebar-link is-active" aria-current="page">
+             <button type="button" className={`admin-sidebar-link${activeSection === 'registrations' ? ' is-active' : ''}`} aria-current={activeSection === 'registrations' ? 'page' : undefined} onClick={() => setActiveSection('registrations')}>
               <span className="admin-sidebar-icon"><NavIcon name="registration" /></span> Inscripciones
             </button>
             <button type="button" className="admin-sidebar-link" onClick={() => setModalResultadosAbierto(true)}>
@@ -316,6 +317,9 @@ export default function AdminDashboard() {
             {user?.role === 'ADMIN' && <button type="button" className="admin-sidebar-link" onClick={() => setCrearAdmin(true)}>
               <span className="admin-sidebar-icon"><NavIcon name="staff" /></span> Personal autorizado
             </button>}
+             {user?.role === 'ADMIN' && <button type="button" className={`admin-sidebar-link${activeSection === 'institutions' ? ' is-active' : ''}`} aria-current={activeSection === 'institutions' ? 'page' : undefined} onClick={() => setActiveSection('institutions')}>
+               <span className="admin-sidebar-icon"><NavIcon name="team" /></span> Instituciones
+             </button>}
             </>}
           </nav>
           <div className="admin-sidebar-footer">
@@ -329,6 +333,12 @@ export default function AdminDashboard() {
             <span className="admin-session-text">{user?.email}</span>
           </header>
           <AdminPasswordSettings required={Boolean(user?.must_change_password)} />
+        </div> : activeSection === 'institutions' ? <div className="admin-dashboard-container">
+          <header className="admin-dashboard-header">
+            <h1 className="admin-page-title">Instituciones</h1>
+            <span className="admin-session-text">Catálogo para participantes</span>
+          </header>
+          <InstitutionsManagement />
         </div> : <div className="admin-dashboard-container">
         <header className="admin-dashboard-header">
           <h1 className="admin-page-title">Inscripciones</h1>
@@ -420,7 +430,7 @@ export default function AdminDashboard() {
       </div>}
       </div>
       <TournamentManager isOpen={modalResultadosAbierto} event={eventoSeleccionado}
-        onClose={() => setModalResultadosAbierto(false)} />
+        onClose={() => setModalResultadosAbierto(false)} canResetCalendar={user?.role === 'ADMIN'} />
       {crearAdmin && <AdminCreateForm onClose={() => setCrearAdmin(false)} />}
       {crearFormulario && <RegistrationFormBuilder onClose={() => setCrearFormulario(false)} />}
       {gestionarEventos && <EventManagement onClose={() => setGestionarEventos(false)} />}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { adminWebSocketUrl, apiRequest } from '../services/adminApi';
 import { obtenerTodasLasInscripciones } from '../services/adminInscripcionesApi';
 import GroupManagement from './GroupManagement';
@@ -49,7 +49,7 @@ function approvedTeams(rows, eventId, categoryId) {
   }])).values()];
 }
 
-export default function TournamentManager({ isOpen, event, onClose }) {
+export default function TournamentManager({ isOpen, event, onClose, canResetCalendar = false }) {
   const [registrations, setRegistrations] = useState([]);
   const [eventCategories, setEventCategories] = useState([]);
   const [categoryId, setCategoryId] = useState('');
@@ -60,6 +60,10 @@ export default function TournamentManager({ isOpen, event, onClose }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [generationMode, setGenerationMode] = useState('RANDOM');
+  const [manualMatches, setManualMatches] = useState([]);
+  const [podiumVisible, setPodiumVisible] = useState(false);
+  const podiumRef = useRef(null);
 
   const categories = useMemo(() => eventCategories.filter((category) => category.is_active !== false), [eventCategories]);
   const teams = useMemo(() => approvedTeams(registrations, event?.id, categoryId), [registrations, event?.id, categoryId]);
@@ -161,14 +165,54 @@ export default function TournamentManager({ isOpen, event, onClose }) {
 
   async function createTournament() {
     if (!categoryId || saving) return;
+    if (generationMode === 'MANUAL' && (!manualMatches.length || configuredGroups.some((group) => !manualMatches.some((match) => match.group_code === group.code)))) {
+      setError('En modo manual agrega al menos un encuentro para cada grupo.');
+      return;
+    }
     setSaving(true); setError(''); setNotice('Validando grupos y generando encuentros…');
     try {
       const result = await apiRequest(`/api/v1/events/${event.id}/tournament/from-groups`, { method: 'POST', body: JSON.stringify({
         category_id: Number(categoryId),
+        mode: generationMode,
+        manual_matches: generationMode === 'MANUAL' ? manualMatches : [],
       }) });
       setTournament(result); setNotice('Calendario creado desde las asignaciones guardadas.');
     } catch (err) { setError(err.message || 'No se pudo generar el torneo.'); setNotice(''); }
     finally { setSaving(false); }
+  }
+
+  function addManualMatch(groupCode) {
+    const group = configuredGroups.find((item) => item.code === groupCode);
+    const first = group?.teams?.[0]?.team_id || '';
+    const second = group?.teams?.[1]?.team_id || '';
+    setManualMatches((current) => [...current, { group_code: groupCode, team_id_a: first, team_id_b: second }]);
+  }
+
+  async function resetCalendar() {
+    if (!canResetCalendar || !categoryId || saving) return;
+    if (!window.confirm('¿Cancelar el calendario y sus encuentros para reorganizar los grupos? Las inscripciones y pagos se conservarán.')) return;
+    setSaving(true); setError(''); setNotice('');
+    try {
+      const result = await apiRequest(`/api/v1/admin/events/${event.id}/categories/${categoryId}/tournament-groups/reset-calendar`, { method: 'POST' });
+      setNotice(result.message || 'Calendario cancelado. Ya puede reorganizar los grupos.');
+      setSelectedGroupCode('');
+      await loadTournament(categoryId);
+    } catch (err) { setError(err.message || 'No se pudo cancelar el calendario.'); }
+    finally { setSaving(false); }
+  }
+
+  async function generatePodium() {
+    if (saving || !tournament?.podium?.length) return;
+    if (tournament.phase === 'FINAL') {
+      await mutate(`/api/v1/events/${event.id}/tournament/advance-phase?category_id=${categoryId}`);
+    }
+    setPodiumVisible(true);
+  }
+
+  async function togglePodiumFullscreen() {
+    if (!podiumRef.current) return;
+    if (document.fullscreenElement === podiumRef.current) await document.exitFullscreen();
+    else await podiumRef.current.requestFullscreen();
   }
 
   async function mutate(path, body) {
@@ -213,11 +257,37 @@ export default function TournamentManager({ isOpen, event, onClose }) {
         <div className="tournament-toolbar"><label>Categoría<select value={categoryId} onChange={(e) => selectCategory(e.target.value)} disabled={!categories.length}>
           {!categories.length && <option value="">Este evento no tiene categorías activas</option>}
           {categories.map((item) => <option key={item.category_id ?? item.id} value={item.category_id ?? item.id}>{item.category_name ?? item.name}</option>)}
-        </select></label><div className="tournament-phase-chip">FASE ACTUAL <strong>{PHASES[tournament?.phase || 'NOT_CONFIGURED']}</strong></div></div>
+        </select></label><div className="tournament-phase-chip">FASE ACTUAL <strong>{PHASES[tournament?.phase || 'NOT_CONFIGURED']}</strong></div>
+          {canResetCalendar && configured && <button type="button" className="tournament-danger" onClick={resetCalendar} disabled={saving}>Cancelar calendario y reorganizar grupos</button>}
+        </div>
         {!configured ? <>
           <div className="tournament-setup-note">Para este evento y categoría, crea los grupos y define la capacidad de cada uno. Asigna solo equipos aprobados; el sistema programa todos contra todos sin repetir cruces. Clasifican los dos mejores de cada grupo y, si la llave no es potencia de dos, los mejores sembrados reciben pase automático. Con cuatro grupos se conserva la llave oficial del jueves.</div>
           <GroupManagement isOpen embedded event={event} selectedCategoryId={categoryId} onStateChange={onGroupStateChange} />
           {groupReadiness.length > 0 && <div className="tournament-setup-note tournament-readiness" role="status"><strong>Completa la configuración de grupos:</strong> {groupReadiness.join(' ')}</div>}
+          <section className="tournament-generation-mode">
+            <label>Forma de generar encuentros<select value={generationMode} onChange={(e) => { setGenerationMode(e.target.value); setManualMatches([]); }}>
+              <option value="RANDOM">Generación aleatoria / todos contra todos</option>
+              <option value="MANUAL">Editar encuentros manualmente</option>
+            </select></label>
+            {generationMode === 'MANUAL' && <div className="tournament-manual-builder">
+              <p>Elige quién se enfrenta en cada grupo. Puedes agregar varios encuentros y ordenar las peleas según el orden en que los agregues.</p>
+              {configuredGroups.map((group) => <fieldset key={group.code}><legend>{group.name}</legend>
+                {manualMatches.filter((match) => match.group_code === group.code).map((match, index) => {
+                  const matchIndex = manualMatches.indexOf(match);
+                  return <div className="tournament-manual-row" key={`${group.code}-${index}`}>
+                    <select value={match.team_id_a} onChange={(e) => setManualMatches((current) => current.map((item, i) => i === matchIndex ? { ...item, team_id_a: Number(e.target.value) } : item))}>
+                      <option value="">Equipo rojo</option>{group.teams.map((team) => <option key={team.team_id} value={team.team_id}>{team.team}</option>)}
+                    </select><span>vs.</span>
+                    <select value={match.team_id_b} onChange={(e) => setManualMatches((current) => current.map((item, i) => i === matchIndex ? { ...item, team_id_b: Number(e.target.value) } : item))}>
+                      <option value="">Equipo azul</option>{group.teams.map((team) => <option key={team.team_id} value={team.team_id}>{team.team}</option>)}
+                    </select>
+                    <button type="button" onClick={() => setManualMatches((current) => current.filter((_, i) => i !== matchIndex))}>Quitar</button>
+                  </div>;
+                })}
+                <button type="button" className="tournament-secondary" onClick={() => addManualMatch(group.code)}>+ Agregar encuentro en {group.name}</button>
+              </fieldset>)}
+            </div>}
+          </section>
           <footer className="tournament-footer"><span>{teams.length} equipos aprobados · {configuredGroups.length} grupos configurados</span><button type="button" className="tournament-primary" onClick={createTournament} disabled={saving || groupReadiness.length > 0}>{saving ? 'Generando…' : 'Crear calendario e iniciar gestión de encuentros'}</button></footer>
         </> : <>
           {tournament.phase === 'GROUP' && <div className="tournament-summary">Cada grupo conserva su dohyo durante toda la fase. La tabla clasifica por combates ganados, diferencia de Yukos y duelo directo; los empates que el reglamento no resuelve se muestran como empate.</div>}
@@ -274,7 +344,9 @@ export default function TournamentManager({ isOpen, event, onClose }) {
                 && groupBoard.match.group_code !== activeGroupCode;
               return <section className="tournament-group-view" aria-label={`Vista exclusiva de ${tournament.group_names?.[activeGroupCode] || `Grupo ${activeGroupCode}`}`}>
                 <header><div><span>VISTA EXCLUSIVA DEL GRUPO</span><h3>{tournament.group_names?.[activeGroupCode] || `Grupo ${activeGroupCode}`}</h3></div>
-                  <b>{rows.length} equipos · Dohyo {groupDohyoNumber}</b></header>
+                  <div className="tournament-group-header-actions"><b>{rows.length} equipos · Dohyo {groupDohyoNumber}</b>
+                    {canResetCalendar && <button type="button" className="tournament-manual-edit" onClick={resetCalendar} disabled={saving}>Editar encuentros manualmente</button>}
+                  </div></header>
                 <ol className="tournament-group-standings">{rows.map((team) => <li key={team.team_id} className={team.rank <= 2 ? 'provisional-qualifier' : ''}>
                   <span><b>{team.rank}.</b> {team.team} · {team.robot}</span>
                   <strong>{team.wins} combates · {team.yukos_for}–{team.yukos_against} Yukos · Δ {team.difference}</strong>
@@ -325,6 +397,14 @@ export default function TournamentManager({ isOpen, event, onClose }) {
             const winner = finalMatch?.winner_team_id === finalMatch?.team_id_a ? finalMatch.team_a
               : finalMatch?.winner_team_id === finalMatch?.team_id_b ? finalMatch.team_b : '—';
             return <div className="tournament-champion">Torneo finalizado · campeón: {winner}</div>; })()}
+           {tournament.podium?.length > 0 && <section ref={podiumRef} className="tournament-podium-section">
+             <div className="tournament-podium-heading"><span>🏆 PODIO OFICIAL</span><small>Resultados finales del torneo</small></div>
+             <div className="tournament-podium-actions"><button type="button" className="tournament-podium-button" onClick={() => podiumVisible ? setPodiumVisible(false) : generatePodium()} disabled={saving}>{podiumVisible ? 'Ocultar podio' : 'Generar y mostrar podio'}</button>
+              {podiumVisible && <button type="button" className="tournament-podium-fullscreen" onClick={togglePodiumFullscreen}>⛶ Podio en pantalla completa</button>}</div>
+            {podiumVisible && <div className="tournament-podium-grid">{tournament.podium.map((entry) => <article key={entry.position} className="tournament-podium-place">
+               <span>{entry.position === 1 ? '🏆 1.º LUGAR OFICIAL' : entry.position === 2 ? '🥈 2.º LUGAR OFICIAL' : '🥉 3.º LUGAR OFICIAL'}</span><strong>{entry.team}</strong><small>{entry.robot}</small>
+            </article>)}</div>}
+          </section>}
           <div className="tournament-standings-grid"><article className="tournament-history"><h3>Encuentros de esta categoría</h3>{(tournament.matches || []).map((match) => <div key={match.match_id}><span>{PHASES[match.stage_code] || match.stage_code} · {match.group_name || match.group_code || match.bracket_slot}</span><b>{match.team_a} {match.score_a}–{match.score_b} {match.team_b}</b></div>)}</article></div>
         </>}
       </>}

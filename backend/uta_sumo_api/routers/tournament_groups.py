@@ -202,6 +202,57 @@ def list_groups(event_id: int, category_id: int, response: Response,
             "groups": groups}
 
 
+@router.post("/{event_id}/categories/{category_id}/tournament-groups/reset-calendar")
+def reset_calendar(event_id: int, category_id: int,
+                   user=Depends(require_roles("ADMIN")), db: Session = Depends(get_db)):
+    """Cancel the generated calendar so an administrator can reorganize groups.
+
+    Registrations and their payments remain untouched. It is blocked only
+    after scoring exists; an empty/live placeholder can be stopped and
+    removed so group management can be reorganized.
+    """
+    _validate_event_category(db, event_id, category_id)
+    try:
+        match_ids = [int(row[0]) for row in db.execute(text("""
+          SELECT m.MatchId FROM dbo.CompetitionMatches m
+          JOIN dbo.CompetitionRounds r ON r.RoundId=m.RoundId
+          WHERE r.EventId=:event AND r.CategoryId=:category
+        """), {"event": event_id, "category": category_id}).all()]
+        if match_ids and db.execute(text("""
+          SELECT TOP (1) 1 FROM dbo.ScoreEntries WHERE MatchId IN :ids
+        """).bindparams(bindparam("ids", expanding=True)), {"ids": match_ids}).first():
+            raise HTTPException(409, "No se puede reiniciar: ya existen puntuaciones registradas.")
+        if match_ids:
+            # El encuentro puede haber quedado marcado como LIVE al abrir la
+            # pantalla. Si todavía no tiene puntuaciones, el administrador
+            # puede detenerlo y reiniciar la organización sin perder datos.
+            db.execute(text("""DELETE FROM dbo.ActiveCombatHistory
+              WHERE PreviousMatchId IN :ids OR NewMatchId IN :ids""").bindparams(bindparam("ids", expanding=True)), {"ids": match_ids})
+            db.execute(text("DELETE FROM dbo.LiveDohyoMatches WHERE MatchId IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": match_ids})
+            db.execute(text("DELETE FROM dbo.ActiveCombat WHERE MatchId IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": match_ids})
+            db.execute(text("DELETE FROM dbo.TournamentBracketByes WHERE EventId=:event AND CategoryId=:category"),
+                       {"event": event_id, "category": category_id})
+            db.execute(text("DELETE FROM dbo.CompetitionMatchTeams WHERE MatchId IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": match_ids})
+            db.execute(text("DELETE FROM dbo.CompetitionMatches WHERE MatchId IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": match_ids})
+        db.execute(text("""DELETE FROM dbo.CompetitionRounds
+          WHERE EventId=:event AND CategoryId=:category"""), {"event": event_id, "category": category_id})
+        db.execute(text("""DELETE FROM dbo.TournamentTeamGroups
+          WHERE EventId=:event AND CategoryId=:category"""), {"event": event_id, "category": category_id})
+        db.execute(text("""DELETE FROM dbo.TournamentPhaseState
+          WHERE EventId=:event AND CategoryId=:category"""), {"event": event_id, "category": category_id})
+        db.execute(text("""UPDATE dbo.Events SET CompetitionStatus='SCHEDULED'
+          WHERE EventId=:event AND CompetitionStatus IN ('LIVE','PAUSED')"""), {"event": event_id})
+        db.commit()
+        return {"event_id": event_id, "category_id": category_id,
+                "message": "Calendario y encuentros cancelados. Ya puede modificar los grupos."}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+
 @router.get("/{event_id}/categories/{category_id}/tournament-groups/eligible-registrations")
 def eligible_registrations(event_id: int, category_id: int, response: Response,
                            page: int = Query(1, ge=1), limit: int = Query(5, ge=1, le=100),
