@@ -217,6 +217,7 @@ La creación es idempotente: si el correo ya existe como `ADMIN`, la migración 
 En una instalación existente, después de actualizar el código en Rocky Linux ejecuta desde la raíz del proyecto:
 
 ```bash
+sudo docker compose build migrate
 sudo docker compose run --rm migrate python scripts/migrate.py
 sudo docker compose up -d
 ```
