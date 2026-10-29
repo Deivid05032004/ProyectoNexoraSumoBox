@@ -58,7 +58,7 @@ sudo firewall-cmd --reload
 sudo firewall-cmd --list-services
 ```
 
-Repite la apertura de TCP 80 y 443 en el firewall del proveedor VPS/router. No abras TCP 1433, 8000 ni 8080: SQL Server y FastAPI permanecen dentro de Compose y el puerto 8080 local solo está enlazado a `127.0.0.1`.
+Repite la apertura de TCP 80 y 443 en el firewall del proveedor VPS/router. No abras TCP 1433 ni 8000: SQL Server y FastAPI permanecen dentro de Compose. El puerto 8080 queda local por defecto, pero se puede enlazar a una IP LAN con `HTTP_BIND_ADDRESS` para pruebas dentro de la red.
 
 ## 1. Preparar la configuración
 
@@ -105,6 +105,7 @@ Variables que deben quedar coherentes:
 | `GOOGLE_CLIENT_ID` | Client ID web de Google; se compila en React y también lo valida el backend. Debe ser el mismo en ambos lados. |
 | `VITE_API_BASE_URL` | Déjalo vacío para usar el mismo host y protocolo que el sitio; es el valor recomendado para Docker en local y producción. Solo configúralo si despliegas la API en otro origen. |
 | `PUBLIC_DOMAIN` | Host público, por ejemplo `torneo.midominio.ec`, para el perfil de producción. |
+| `HTTP_BIND_ADDRESS` | Interfaz/IP del host para el puerto de pruebas 8080. Por defecto `127.0.0.1`; para LAN, usa la IP privada reservada de la VM. |
 | `CORS_ORIGINS` | En producción, el origen exacto `https://torneo.midominio.ec`; en local, `http://localhost:8080`. No uses `*`. |
 
 En Google Cloud Console, registra como origen JavaScript el origen que verán los usuarios (por ejemplo, `https://torneo.midominio.ec`; en desarrollo, `http://localhost:8080`). No se configura URI de redirección para el botón GIS que utiliza el frontend.
@@ -177,6 +178,34 @@ No hace falta instalar Apache ni Nginx en el host: Caddy, Nginx del frontend, Fa
 - Si mueves el servidor Rocky a otra red, la IP pública podría cambiar. Actualiza el DNS `A` (o el proveedor DDNS), verifica otra vez los firewalls del servidor y del proveedor/router, y confirma que TCP 80/443 lleguen al servidor. Una IP pública fija evita ese cambio; si el servidor está detrás de CGNAT, el reenvío de puertos normalmente no será suficiente y necesitarás IP pública o un túnel/VPS.
 - Mantén el dominio como URL oficial. Si cambias a una URL/IP distinta, actualiza también `PUBLIC_DOMAIN`, `CORS_ORIGINS` y el origen JavaScript autorizado en Google Cloud Console. Los accesos OAuth de Google dependen del origen autorizado.
 - El puerto 8080 está publicado solo en `127.0.0.1` para pruebas locales del servidor; desde otros equipos de la red no será accesible por diseño. El acceso público se hace por Caddy en 80/443.
+
+### Acceso desde otros equipos de la misma red (sin túnel)
+
+Para que otros equipos de la LAN abran la página, publica el frontend en la dirección LAN de la VM. En VirtualBox configura el adaptador de red como **Adaptador puente** (no NAT); reserva una IP fija para la VM en el router. En Rocky Linux identifica esa IP:
+
+```bash
+ip -4 -o addr show scope global
+```
+
+En `.env`, configura la IP LAN de la VM, por ejemplo:
+
+```dotenv
+HTTP_BIND_ADDRESS=192.168.100.243
+HTTP_PORT=8080
+```
+
+Usa la IP actual de la VM, no copies el ejemplo si es distinta. Desde la raíz del repositorio recrea el servicio web:
+
+```bash
+sudo docker compose up -d web
+sudo docker compose ps web
+```
+
+Los demás equipos de esa misma red podrán abrir `http://IP_LAN_DE_LA_VM:8080` (por ejemplo, `http://192.168.100.243:8080`). No configures reenvío de puertos en el router para este acceso LAN. Si no conecta, confirma que la VM siga en modo puente, que ambos equipos estén en la misma subred y revisa la política de firewall de Rocky y Docker; Docker gestiona reglas de red propias para los puertos publicados.
+
+**Google requiere HTTPS en orígenes web que no sean `localhost` y no acepta una IP cruda como origen autorizado.** Por eso, el acceso por IP LAN y HTTP sirve para revisar la página, pero no para completar el inicio de sesión Google en otros dispositivos. Para el flujo completo en la LAN usa un dominio propio con DNS que resuelva a la IP privada de la VM y un certificado HTTPS confiable; configura ese origen HTTPS en el Client ID de Google y `PUBLIC_DOMAIN` en `.env`. El perfil de producción publica Caddy en 80/443 y no necesita túnel cuando el DNS local dirige los dispositivos a la VM. [Reglas de origen de Google](https://developers.google.com/identity/protocols/oauth2/javascript-implicit-flow).
+
+Un túnel solo hace falta si quieres llegar desde Internet y no tienes una IP pública enrutable o port forwarding disponible (por ejemplo, CGNAT). Para publicar por Internet usa dominio, HTTPS, firewall y evaluación de seguridad; no expongas el puerto 8080 de pruebas.
 
 ## 4. Iniciar el servicio
 
