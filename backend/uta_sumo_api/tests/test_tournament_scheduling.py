@@ -9,6 +9,9 @@ from routers.competition import (
     _unresolved_qualifying_ties,
     _phase_progress,
     _next_phase,
+    TOURNAMENT_YUKOS_TO_WIN,
+    FINAL_YUKOS_TO_WIN,
+    _yukos_to_win,
 )
 
 
@@ -31,12 +34,32 @@ def test_group_qualifiers_get_seeded_byes_and_cross_group_openers():
     assert _bracket_stage(6) == "QUARTERFINAL"
     assert len(fixtures) == 2
     assert len(byes) == 2
+    assert {fixture[3] for fixture in fixtures} == {TOURNAMENT_YUKOS_TO_WIN}
     assert len({team_id for _, _, pair, _ in fixtures for team_id in pair}) == 4
     teams_by_id = {team["team_id"]: team for team in teams}
     assert not any(
         teams_by_id[left]["group_code"] == teams_by_id[right]["group_code"]
         for _, _, (left, right), _ in fixtures
     )
+
+
+def test_final_uses_three_yukos_and_other_seeded_fixtures_use_two():
+    teams = [
+        {"team_id": 1, "robot_id": 11, "group_code": "A"},
+        {"team_id": 2, "robot_id": 12, "group_code": "B"},
+    ]
+    fixtures, _ = _make_seeded_fixtures("FINAL", teams, actor_id=1, score_to_win=3)
+
+    assert len(fixtures) == 1
+    assert fixtures[0][3] == FINAL_YUKOS_TO_WIN == 3
+    quarterfinal, _ = _make_seeded_fixtures("QUARTERFINAL", teams, actor_id=1,
+                                            score_to_win=FINAL_YUKOS_TO_WIN)
+    assert quarterfinal[0][3] == TOURNAMENT_YUKOS_TO_WIN == 2
+    assert _yukos_to_win("GROUP") == 2
+    assert _yukos_to_win("QUARTERFINAL") == 2
+    assert _yukos_to_win("SEMIFINAL") == 2
+    assert _yukos_to_win("THIRD_PLACE") == 2
+    assert _yukos_to_win("FINAL") == 3
 
 
 def test_bracket_size_supports_the_configured_64_qualifier_ceiling():
@@ -118,7 +141,7 @@ def test_pending_cancelled_and_no_winner_fixtures_do_not_create_wins():
     assert stats[1]["yukos_for"] == stats[2]["yukos_against"] == 1
 
 
-def test_three_yuko_round_final_counts_one_combat_win_and_uses_final_yuko_total():
+def test_two_yuko_combat_counts_one_combat_win_and_uses_final_yuko_total():
     stats = {team_id: {"team_id": team_id, "played": 0, "wins": 0, "losses": 0,
                        "points": 0, "yukos_for": 0, "yukos_against": 0}
              for team_id in (1, 2)}

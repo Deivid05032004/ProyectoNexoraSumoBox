@@ -183,6 +183,15 @@ reconstruir fase y resultados cuando reconecta.
 
 ### Fases del torneo y autorización de avance
 
+Los encuentros oficiales de grupos, rondas eliminatorias y tercer puesto se
+ganan al primero en alcanzar **2 Yukos**. La gran final se gana al alcanzar
+**3 Yukos**, conforme al formato de mejor de cinco indicado en el reglamento.
+El marcador se bloquea al llegar al límite de cada fase y las rutas de
+puntuación directa no pueden alterar encuentros del torneo. La migración
+`44_final_match_three_yukos.sql` normaliza encuentros existentes
+y deja una restricción en SQL Server; los combates manuales conservan su regla
+previa.
+
 El snapshot de `GET /api/v1/events/{event_id}/tournament?category_id={id}`
 incluye la clasificación oficial calculada desde los resultados en SQL,
 `phase_progress`, `next_phase` y `can_advance`. Al concluir todos los encuentros,
