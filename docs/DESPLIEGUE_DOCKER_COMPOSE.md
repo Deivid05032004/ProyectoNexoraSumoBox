@@ -156,11 +156,7 @@ docker compose logs --tail=200 db migrate api web backup
 Invoke-WebRequest http://localhost:8080/ -UseBasicParsing
 ```
 
-Abre `http://localhost:8080` en esa misma computadora. Las migraciones corren automáticamente en el primer inicio. Para crear el administrador local, ejecuta desde la raíz:
-
-```powershell
-docker compose run --rm migrate python scripts/provision_operator_user.py
-```
+Abre `http://localhost:8080` en esa misma computadora. Las migraciones corren automáticamente en el primer inicio y crean la cuenta administrativa inicial indicada en la sección 5.
 
 Al terminar, detén el entorno local con `docker compose down`; esto conserva los volúmenes locales. Nunca uses `docker compose down -v` si quieres conservar esa base.
 
@@ -204,19 +200,28 @@ sudo docker compose --profile production logs -f db migrate api web https backup
 
 Abre `https://tu-dominio`. El dominio debe resolver al servidor y los puertos 80/443 deben estar accesibles desde Internet para que Caddy emita el certificado. El endpoint de salud se consume dentro de la red de Compose; la API no queda publicada directamente. En la primera puesta en marcha, Compose inicia SQL Server, ejecuta migraciones y luego levanta API, frontend y proxy HTTPS.
 
-## 5. Crear la primera cuenta administrativa
+## 5. Cuenta administrativa inicial
 
-Por seguridad no se distribuye una contraseña de administrador fija ni se crea una cuenta privilegiada universal al construir la imagen. Después de iniciar los servicios, crea el operador desde una terminal interactiva:
+Al ejecutar `docker compose up --build -d`, el servicio de migración crea de forma transaccional la cuenta inicial si todavía no existe:
+
+| Campo | Valor inicial |
+|---|---|
+| Correo | `adminTics@uta.edu.ec` |
+| Contraseña inicial | `Admin@utaTics` |
+| Rol | `ADMIN` |
+
+Inicia sesión y cambia la contraseña inmediatamente desde la pestaña **Seguridad**. El sistema marca esta cuenta para exigir el cambio antes de acceder al resto del panel. La contraseña inicial es temporal y no cumple la política de contraseñas permanentes; elige una nueva de al menos 15 caracteres.
+
+La creación es idempotente: si el correo ya existe como `ADMIN`, la migración conserva su contraseña y estado, nunca la restablece. Si el correo existe con otro rol, la migración se detiene con un error en vez de elevar privilegios silenciosamente. Para otro correo/clave inicial, configura `INITIAL_ADMIN_EMAIL` y `INITIAL_ADMIN_PASSWORD` en `.env` antes del primer despliegue. No publiques ni compartas esos valores.
+
+En una instalación existente, después de actualizar el código en Rocky Linux ejecuta desde la raíz del proyecto:
 
 ```bash
-sudo docker compose run --rm migrate python scripts/provision_operator_user.py
+sudo docker compose run --rm migrate python scripts/migrate.py
+sudo docker compose up -d
 ```
 
-Escribe correo, nombre, apellido, rol `ADMIN` y una contraseña segura de 15 o más caracteres dos veces. La contraseña no se imprime ni se guarda en texto plano. Usa el correo y la contraseña que acabas de definir para entrar al panel.
-
-Este paso se hace una vez por cada instalación. La cuenta se almacena en la base persistente. No hay una clave administrativa universal quemada en la imagen; no uses cuentas demo en un servidor público.
-
-En Windows PowerShell, usa el mismo comando pero sin `sudo`.
+En Windows PowerShell, usa los mismos comandos sin `sudo`. Si la cuenta ya había sido creada manualmente por `provision_operator_user.py`, no se cambiará su contraseña; usa las credenciales que definiste entonces o restablécela desde un administrador existente.
 
 ## 6. Confirmar que la publicación funciona
 

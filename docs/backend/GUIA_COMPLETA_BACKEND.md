@@ -258,22 +258,25 @@ La ruta `/admin` solo ofrece email y contraseña. La API también restringe
 `/auth/google` y `/auth/google/link` a participantes; una identidad Google no
 puede crear, autenticar ni vincular cuentas `ADMIN`, `EVENT_MANAGER` o `PARTICIPANT`.
 
-El personal privilegiado se crea manualmente mediante
-`backend/uta_sumo_api/scripts/provision_operator_user.py`. Este aprovisionador
-valida correo y dominio, rol permitido, nombre/apellido, confirmación y la misma
-política de contraseña del registro de participantes: al menos 15 caracteres,
-máximo establecido, rechazo de claves previsibles y prohibición de incluir el
-correo. El usuario luego accede manualmente a `/admin` con email y contraseña;
-el registro público nunca acepta roles privilegiados.
+La primera cuenta `ADMIN` se crea durante la ejecución de `scripts/migrate.py`
+si el correo configurado no existe. En Compose, los valores iniciales son
+`adminTics@uta.edu.ec` / `Admin@utaTics`; se fuerza el cambio de contraseña en
+el primer acceso. La migración nunca restablece una contraseña existente ni
+eleva automáticamente el rol de una cuenta preexistente. Para crear otras
+cuentas privilegiadas se usa `backend/uta_sumo_api/scripts/provision_operator_user.py`,
+que valida correo, rol, nombre/apellido y la política de contraseña (mínimo 15
+caracteres, además de las comprobaciones de seguridad). El registro público
+nunca acepta roles privilegiados.
 
 ### Otras rutas de autenticación
 
 `GET /api/v1/auth/me` devuelve la cuenta actual. `POST /api/v1/auth/change-password`
 requiere sesión Bearer, contraseña actual y nueva contraseña; incrementa la
 versión del token e invalida sesiones previas. No hay refresh token. Las cuentas
-privilegiadas se crean por un operador con
-`scripts/provision_operator_user.py`; no existe contraseña admin universal ni
-rol privilegiado en el registro público.
+privilegiadas adicionales se crean por un operador con
+`scripts/provision_operator_user.py`. La cuenta inicial definida por migración
+debe cambiar su contraseña temporal inmediatamente; no se acepta rol
+privilegiado desde el registro público.
 
 ## 6. Roles y autorización
 

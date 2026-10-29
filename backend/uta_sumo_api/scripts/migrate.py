@@ -409,6 +409,72 @@ def _cleanup_legacy_regulation_files() -> None:
             candidate.unlink()
 
 
+def _bootstrap_initial_admin() -> None:
+    """Create the configured first ADMIN once, without resetting existing credentials."""
+    from app.core.crypto import email_lookup_hash, encrypt_text
+    from app.core.security import hash_password
+
+    email = os.getenv("INITIAL_ADMIN_EMAIL", "adminTics@uta.edu.ec").strip()
+    password = os.getenv("INITIAL_ADMIN_PASSWORD", "Admin@utaTics")
+    if not email or not password:
+        raise RuntimeError("INITIAL_ADMIN_EMAIL e INITIAL_ADMIN_PASSWORD no pueden estar vacíos.")
+
+    lookup = email_lookup_hash(email)
+    # Serialize concurrent migrator invocations and make check+insert atomic.
+    with migration_engine.begin() as conn:
+        lock_result = conn.execute(text("""
+            DECLARE @result INT;
+            EXEC @result = sys.sp_getapplock
+                @Resource = 'uta-sumo-initial-admin-bootstrap',
+                @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 30000;
+            SELECT @result;
+        """)).scalar_one()
+        if lock_result < 0:
+            raise RuntimeError("No se pudo bloquear la creación inicial del administrador.")
+
+        existing = conn.execute(text("""
+            SELECT u.UserId, r.Code
+            FROM dbo.Users u WITH (UPDLOCK, HOLDLOCK)
+            JOIN dbo.Roles r ON r.RoleId=u.RoleId
+            WHERE u.EmailLookupHash=:lookup
+        """), {"lookup": lookup}).first()
+        if existing:
+            if existing.Code != "ADMIN":
+                raise RuntimeError(
+                    f"El correo inicial {email} ya pertenece al rol {existing.Code}; "
+                    "no se elevó el rol automáticamente."
+                )
+            print(f"ADMIN inicial ya existe (UserId={existing.UserId}); se conservó su contraseña.")
+            return
+
+        role_id = conn.execute(text("SELECT RoleId FROM dbo.Roles WHERE Code='ADMIN'")).scalar_one_or_none()
+        if role_id is None:
+            raise RuntimeError("No existe el rol ADMIN después de aplicar las migraciones.")
+
+        password_hash = hash_password(password)
+        user_id = conn.execute(text("""
+            INSERT INTO dbo.Users
+                (EmailCiphertext,EmailLookupHash,PasswordHash,FirstName,LastName,
+                 RoleId,IsActive,TokenVersion,MustChangePassword)
+            OUTPUT INSERTED.UserId
+            VALUES (:email,:lookup,:password,:first_name,:last_name,
+                    :role_id,1,0,1)
+        """), {
+            "email": encrypt_text(email),
+            "lookup": lookup,
+            "password": password_hash,
+            "first_name": encrypt_text("Admin"),
+            "last_name": encrypt_text("UTA Tics"),
+            "role_id": role_id,
+        }).scalar_one()
+        conn.execute(text("""
+            INSERT INTO dbo.UserSecurityAudit
+                (TargetUserId,ActionCode,NewRoleId,NewIsActive)
+            VALUES (:user_id,'ACCOUNT_CREATED',:role_id,1)
+        """), {"user_id": user_id, "role_id": role_id})
+        print(f"ADMIN inicial creado (UserId={user_id}, correo={email}); debe cambiar su contraseña al ingresar.")
+
+
 def _backfill_encrypted_pii(conn, file_backups) -> None:
     """Encrypt legacy plaintext columns and local receipts in the migration transaction."""
     has_legacy_username = conn.execute(text(
@@ -510,6 +576,7 @@ def main() -> None:
         _reset_database(confirm_drop=args.confirm_drop)
     _ensure_database_exists()
     _apply_migrations()
+    _bootstrap_initial_admin()
     if os.getenv("AUTO_BOOTSTRAP_DEMO_ACCOUNTS", "false").strip().lower() in {"1", "true", "yes"}:
         if DB_NAME != "UTA_SUMO_ROBOTICS_CUP" or not _is_local_sql_server():
             raise SystemExit("AUTO_BOOTSTRAP_DEMO_ACCOUNTS solo se permite en la base local de desarrollo.")
