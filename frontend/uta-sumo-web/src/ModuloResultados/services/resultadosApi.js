@@ -16,8 +16,10 @@
 const STORAGE_KEY_RESULTADOS = 'uta.torneo.resultados';
 const STORAGE_KEY_CRONOMETRO = 'uta.torneo.cronometro';
 const BROADCAST_CHANNEL_NAME = 'uta-resultados-channel';
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
-const API_WS_BASE = API_BASE.replace(/^http/, 'ws');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
+const API_WS_BASE = API_BASE
+  ? API_BASE.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:')
+  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
 
 /** Nombre del evento DOM interno para notificar dentro de la misma pestaña. */
 export const EVENTO_RESULTADOS_ACTUALIZADOS = 'uta-resultados-updated';

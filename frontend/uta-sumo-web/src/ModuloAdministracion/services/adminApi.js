@@ -1,4 +1,4 @@
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
 
 const MENSAJES_HTTP = {
   400: 'La solicitud tiene datos incorrectos. Revisa la información e inténtalo de nuevo.',
@@ -54,7 +54,9 @@ async function solicitarApi(url, options) {
 }
 
 export function adminWebSocketUrl(path) {
-  const socketBase = API_BASE.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:');
+  const socketBase = API_BASE
+    ? API_BASE.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:')
+    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
   return `${socketBase}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
