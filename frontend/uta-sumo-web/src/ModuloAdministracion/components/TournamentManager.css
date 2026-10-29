@@ -29,6 +29,11 @@
 .tournament-progress-track{height:7px;margin:6px 0;background:#253447;border-radius:99px;overflow:hidden}
 .tournament-progress-track>span{display:block;height:100%;background:linear-gradient(90deg,#2e6ddd,#63a5ff);border-radius:inherit;transition:width .2s ease}
 .tournament-progress-wrap>small,.tournament-official-bracket{display:block;margin-top:6px;color:#91a9c4;font-size:10px;line-height:1.5}
+.tournament-phase-ready{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-top:12px;padding:12px 14px;border:1px solid #3b765e;border-radius:10px;background:linear-gradient(100deg,#123327,#172a31);animation:phase-ready-in .4s ease both}
+.tournament-phase-ready>div{display:grid;gap:3px}.tournament-phase-ready b{color:#9ce6c5;font-size:12px}.tournament-phase-ready span{color:#bfd3d0;font-size:10px;line-height:1.45}
+.tournament-advance-phase{flex:0 0 auto;border:1px solid #77d9ad;border-radius:9px;padding:10px 13px;background:linear-gradient(135deg,#1d795a,#176247);color:#fff;font-size:11px;font-weight:900;cursor:pointer;box-shadow:0 5px 18px #0c6a4933;transition:transform .16s ease,filter .16s ease}
+.tournament-advance-phase:hover:not(:disabled){transform:translateY(-1px);filter:brightness(1.12)}.tournament-advance-phase:disabled{opacity:.55;cursor:wait}
+@keyframes phase-ready-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .tournament-group-standings li.provisional-qualifier{background:#162b3d}
 .tournament-qualifier-badge{flex:0 0 auto;color:#a6d8c1;font-size:9px;font-weight:800}
 .tournament-group-match{margin:0}
@@ -36,3 +41,5 @@
 .tournament-next-group-match .tournament-primary{flex:0 0 auto}
 .tournament-group-waiting{margin:10px 0 0;padding:9px 10px;border:1px solid #37485d;border-radius:8px;background:#192433;color:#a9bbd2;font-size:11px}
 @media(max-width:680px){.tournament-group-standings li{align-items:flex-start;flex-direction:column;gap:3px}.tournament-next-group-match{align-items:stretch;flex-direction:column}}
+@media(max-width:680px){.tournament-phase-ready{align-items:stretch;flex-direction:column}.tournament-advance-phase{width:100%}}
+@media(prefers-reduced-motion:reduce){.tournament-phase-ready{animation:none}.tournament-advance-phase{transition:none}}

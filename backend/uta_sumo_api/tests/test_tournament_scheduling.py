@@ -8,6 +8,7 @@ from routers.competition import (
     _round_robin_pairs,
     _unresolved_qualifying_ties,
     _phase_progress,
+    _next_phase,
 )
 
 
@@ -45,6 +46,15 @@ def test_bracket_size_supports_the_configured_64_qualifier_ceiling():
     assert _bracket_stage(32) == "ROUND_OF_32"
     assert _bracket_stage(64) == "ROUND_OF_64"
     assert _bracket_stage(65) == ""
+
+
+def test_next_phase_matches_official_format_and_is_dynamic_for_custom_groups():
+    assert _next_phase("GROUP", ["A", "B", "C", "D"]) == "QUARTERFINAL"
+    assert _next_phase("GROUP", ["NORTE", "SUR"]) == "SEMIFINAL"
+    assert _next_phase("GROUP", ["A", "B", "C"]) == "QUARTERFINAL"
+    assert _next_phase("SEMIFINAL", ["A", "B"]) == "THIRD_PLACE"
+    assert _next_phase("FINAL", ["A", "B"]) == "FINISHED"
+    assert _next_phase("FINISHED", ["A", "B"]) is None
 
 
 def _standing(team_id, wins, yukos_for, yukos_against, group="A"):
