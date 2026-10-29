@@ -79,7 +79,7 @@ services:
       HOME: /tmp
       TMPDIR: /tmp
     volumes:
-      - ./database/docker_backup_loop.sh:/backup_loop.sh:ro
+      - ./database/docker_backup_loop.sh:/backup_loop.sh:ro,Z
       - sqlserver-backups:/var/opt/mssql/backups
     depends_on:
       migrate:
@@ -151,7 +151,7 @@ services:
       context: frontend/uta-sumo-web
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
         VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     ports:
       - "127.0.0.1:${HTTP_PORT:-8080}:8080"
@@ -174,7 +174,7 @@ services:
       - "443:443"
       - "443:443/udp"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

@@ -2,6 +2,8 @@
 
 Esta guía levanta el frontend React, la API FastAPI, SQL Server, las migraciones, copias de seguridad locales y, cuando hay un dominio, HTTPS automático. Los comprobantes siguen en un volumen persistente y los reglamentos se conservan en SQL Server. API y base de datos no publican puertos en Internet; el frontend es la entrada pública.
 
+El frontend Docker usa rutas relativas del mismo origen (`/api/...` y WebSockets). Así el navegador llama al host y protocolo con que abrió el sitio, sin guardar `localhost` ni la IP de desarrollo dentro del build. Nginx pasa esas rutas a FastAPI.
+
 ## Arquitectura
 
 ```text
@@ -30,6 +32,33 @@ El proceso WebSocket vive en memoria de FastAPI; por ahora se debe desplegar una
 - Para SQL Server, asigna al menos 2 GB de RAM al entorno Docker; 4 GB o más es más razonable para API, frontend y DB juntos.
 - En despliegue público: dominio propio, DNS `A`/`AAAA` hacia el servidor y puertos TCP 80/443 disponibles para HTTPS. No publiques 1433.
 - Elige una edición de SQL Server con licencia apropiada para el uso. `Developer` sirve para desarrollo/pruebas, no para producción. `Standard` requiere licencia; evalúa `Express` solo si sus límites bastan.
+
+### Instalar Docker Compose en Rocky Linux
+
+Usa una instalación Rocky Linux x86-64 mantenida. En el servidor ejecuta:
+
+```bash
+sudo dnf -y install dnf-plugins-core git firewalld
+sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
+sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker firewalld
+sudo docker version
+sudo docker compose version
+sudo docker run --rm hello-world
+```
+
+En Rocky, las dos monturas de solo lectura de `compose.yaml` usan la etiqueta SELinux `Z`; conserva esa opción para que Caddy y el servicio de respaldos puedan leer sus archivos con SELinux en modo enforcing. Ejecuta los comandos de Docker con `sudo` en el servidor; pertenecer al grupo `docker` concede privilegios equivalentes a root.
+
+Abre en el firewall del servidor únicamente HTTP y HTTPS:
+
+```bash
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-services
+```
+
+Repite la apertura de TCP 80 y 443 en el firewall del proveedor VPS/router. No abras TCP 1433, 8000 ni 8080: SQL Server y FastAPI permanecen dentro de Compose y el puerto 8080 local solo está enlazado a `127.0.0.1`.
 
 ## 1. Preparar la configuración
 
@@ -74,78 +103,155 @@ Variables que deben quedar coherentes:
 | `SECRET_KEY` | Secreto aleatorio de al menos 32 caracteres para firmar JWT. |
 | `PII_ENCRYPTION_KEY` | Clave Base64 URL-safe de 32 bytes, estable y respaldada fuera del servidor. |
 | `GOOGLE_CLIENT_ID` | Client ID web de Google; se compila en React y también lo valida el backend. Debe ser el mismo en ambos lados. |
-| `VITE_API_BASE_URL` | Origen completo que publica el frontend. Local: `http://localhost:8080`. Producción: `https://tu-dominio`. Las rutas `/api/...` y `/ws/...` se agregan en el código. |
+| `VITE_API_BASE_URL` | Déjalo vacío para usar el mismo host y protocolo que el sitio; es el valor recomendado para Docker en local y producción. Solo configúralo si despliegas la API en otro origen. |
 | `PUBLIC_DOMAIN` | Host público, por ejemplo `torneo.midominio.ec`, para el perfil de producción. |
 | `CORS_ORIGINS` | En producción, el origen exacto `https://torneo.midominio.ec`; en local, `http://localhost:8080`. No uses `*`. |
 
 En Google Cloud Console, registra como origen JavaScript el origen que verán los usuarios (por ejemplo, `https://torneo.midominio.ec`; en desarrollo, `http://localhost:8080`). No se configura URI de redirección para el botón GIS que utiliza el frontend.
 
+El `GOOGLE_CLIENT_ID` es un identificador público del cliente OAuth, no una contraseña de correo. Usa el Client ID web de la organización y agrega el dominio publicado como origen autorizado; no copies un secreto de cliente OAuth al frontend.
+
 SMTP es opcional. Si no se configura, los correos se guardan en `EmailOutbox` para revisión/reintento administrativo; para correo real configura `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` y `SMTP_FROM_EMAIL`.
 
-## 2. Iniciar en modo local
+## 2. Subir el código a Rocky Linux
 
-Usa `DB_EDITION=Developer` en `.env` solo para desarrollo/pruebas:
+Cuando el pull request con la versión que van a publicar ya esté fusionado, clona la rama principal. Si aún van a validar la rama de trabajo, sustituye `main` por `feature/backend-core`:
+
+```bash
+cd ~
+git clone --branch main --single-branch https://github.com/Deivid05032004/ProyectoNexoraSumoBox.git
+cd ProyectoNexoraSumoBox
+cp .env.example .env
+chmod 600 .env
+nano .env
+```
+
+En `.env`, usa una contraseña fuerte para `MSSQL_SA_PASSWORD` y `DB_PASSWORD`, una clave aleatoria distinta para `SECRET_KEY` y conserva la clave Base64 de `PII_ENCRYPTION_KEY`. Configura `DB_EDITION` según la licencia elegida; cambia `PUBLIC_DOMAIN` por el dominio real, `CORS_ORIGINS=https://tu-dominio` y `GOOGLE_CLIENT_ID` por el cliente OAuth web autorizado para ese origen. Mantén `VITE_API_BASE_URL` vacío. `SMTP_*` se necesita para envío real de correos; con esos campos vacíos el backend conserva los mensajes en la bandeja de salida.
+
+**No despliegues con `DB_EDITION=Developer` en producción.** `.env.example` usa Developer solo para pruebas. Elige una edición/producto y licencia adecuada; Express tiene límites de capacidad. No publiques el archivo `.env` ni pierdas `PII_ENCRYPTION_KEY`: la aplicación no podrá descifrar datos existentes si cambia.
+
+### Probar Compose en Windows antes de publicar
+
+Instala Docker Desktop desde la [página oficial](https://docs.docker.com/desktop/setup/install/windows-install/) y ábrelo con el motor Linux/WSL2 activo. Después de fusionar los cambios a `main`, en PowerShell descarga el proyecto y entra a su raíz:
+
+```powershell
+Set-Location "$HOME\Documents"
+git clone --branch main --single-branch https://github.com/Deivid05032004/ProyectoNexoraSumoBox.git
+Set-Location .\ProyectoNexoraSumoBox
+docker version
+docker compose version
+docker run --rm hello-world
+Copy-Item .env.example .env
+notepad .env
+```
+
+Si el equipo ya tiene el repositorio descargado, usa `Set-Location C:\ruta\ProyectoSumoBox` con la ruta real en vez de volver a clonarlo. Todos los comandos de Compose se ejecutan desde la carpeta raíz, donde está `compose.yaml`.
+
+En el `.env` local puedes usar `DB_EDITION=Developer`; crea secretos propios, deja `VITE_API_BASE_URL=` vacío y conserva `CORS_ORIGINS=http://localhost:8080`. No copies el `.env` de desarrollo al servidor de producción. Luego, todavía desde la raíz:
+
+```powershell
+docker compose up --build -d
+docker compose ps
+docker compose logs --tail=200 db migrate api web backup
+Invoke-WebRequest http://localhost:8080/ -UseBasicParsing
+```
+
+Abre `http://localhost:8080` en esa misma computadora. Las migraciones corren automáticamente en el primer inicio. Para crear el administrador local, ejecuta desde la raíz:
+
+```powershell
+docker compose run --rm migrate python scripts/provision_operator_user.py
+```
+
+Al terminar, detén el entorno local con `docker compose down`; esto conserva los volúmenes locales. Nunca uses `docker compose down -v` si quieres conservar esa base.
+
+Para migrar explícitamente más adelante, reconstruye e inicia el stack normal (el servicio `migrate` aplica scripts pendientes antes del API) o ejecuta `docker compose run --rm migrate python scripts/migrate.py`. El migrador es idempotente: una migración aplicada y registrada no se vuelve a ejecutar.
+
+## 3. Preparar el dominio y HTTPS
+
+1. Reserva el dominio o configura un nombre DNS dinámico. Una IP pública permite llegar al servidor, pero un certificado de confianza pública funciona de forma normal con un dominio que resuelva a esa IP; no publiques el inicio de sesión por HTTP.
+2. Crea un registro `A` hacia la IP pública. Añade `AAAA` solo si IPv6 está configurado y accesible.
+3. Verifica que el dominio resuelva a la IP y que los puertos TCP 80/443 puedan llegar al servidor.
+4. Caddy emite y renueva HTTPS automáticamente cuando el dominio público apunta al servidor y los puertos están accesibles. Con una IP o `localhost`, Caddy puede usar una CA local que otros dispositivos no confían automáticamente.
+
+No hace falta instalar Apache ni Nginx en el host: Caddy, Nginx del frontend, FastAPI y SQL Server se ejecutan en contenedores.
+
+### Si cambia la red
+
+- Si cambia la red de la computadora desde la que navegas, no hay que modificar el proyecto: entra usando el mismo dominio público. Si solo pruebas en esa computadora, `localhost` también sigue funcionando.
+- Si mueves el servidor Rocky a otra red, la IP pública podría cambiar. Actualiza el DNS `A` (o el proveedor DDNS), verifica otra vez los firewalls del servidor y del proveedor/router, y confirma que TCP 80/443 lleguen al servidor. Una IP pública fija evita ese cambio; si el servidor está detrás de CGNAT, el reenvío de puertos normalmente no será suficiente y necesitarás IP pública o un túnel/VPS.
+- Mantén el dominio como URL oficial. Si cambias a una URL/IP distinta, actualiza también `PUBLIC_DOMAIN`, `CORS_ORIGINS` y el origen JavaScript autorizado en Google Cloud Console. Los accesos OAuth de Google dependen del origen autorizado.
+- El puerto 8080 está publicado solo en `127.0.0.1` para pruebas locales del servidor; desde otros equipos de la red no será accesible por diseño. El acceso público se hace por Caddy en 80/443.
+
+## 4. Iniciar el servicio
+
+Para desarrollo local, sin publicar el dominio:
 
 ```bash
 docker compose up --build -d
-```
-
-En Windows PowerShell el mismo comando funciona. Espera a que `web` y `api` aparezcan `healthy`:
-
-```bash
 docker compose ps
 docker compose logs -f db migrate api web backup
 ```
 
-Abre [http://localhost:8080](http://localhost:8080). El endpoint de salud se consume dentro de la red de Compose; la API no queda publicada directamente.
+Abre [http://localhost:8080](http://localhost:8080). En Windows PowerShell se usan los mismos comandos.
 
-## 3. Primera cuenta administrativa
+Para publicar en Rocky Linux con Caddy y HTTPS, asegúrate de configurar `PUBLIC_DOMAIN` y `CORS_ORIGINS` en `.env`, y luego ejecuta el perfil `production`:
+
+```bash
+sudo docker compose --profile production up --build -d
+sudo docker compose --profile production ps
+sudo docker compose --profile production logs -f db migrate api web https backup
+```
+
+Abre `https://tu-dominio`. El dominio debe resolver al servidor y los puertos 80/443 deben estar accesibles desde Internet para que Caddy emita el certificado. El endpoint de salud se consume dentro de la red de Compose; la API no queda publicada directamente. En la primera puesta en marcha, Compose inicia SQL Server, ejecuta migraciones y luego levanta API, frontend y proxy HTTPS.
+
+## 5. Crear la primera cuenta administrativa
 
 Por seguridad no se distribuye una contraseña de administrador fija ni se crea una cuenta privilegiada universal al construir la imagen. Después de iniciar los servicios, crea el operador desde una terminal interactiva:
 
 ```bash
-docker compose run --rm migrate python scripts/provision_operator_user.py
+sudo docker compose run --rm migrate python scripts/provision_operator_user.py
 ```
 
 Escribe correo, nombre, apellido, rol `ADMIN` y una contraseña segura de 15 o más caracteres dos veces. La contraseña no se imprime ni se guarda en texto plano. Usa el correo y la contraseña que acabas de definir para entrar al panel.
 
-Este paso se hace una vez por cada instalación. La cuenta se almacena en la base persistente. No uses cuentas demo en un servidor público.
+Este paso se hace una vez por cada instalación. La cuenta se almacena en la base persistente. No hay una clave administrativa universal quemada en la imagen; no uses cuentas demo en un servidor público.
 
-## 4. Publicar con HTTPS y dominio
+En Windows PowerShell, usa el mismo comando pero sin `sudo`.
 
-1. Configura el DNS `A` (y, si aplica, `AAAA`) de `PUBLIC_DOMAIN` hacia la IP pública del servidor.
-2. En `.env`, define `PUBLIC_DOMAIN=tu-dominio`, `CORS_ORIGINS=https://tu-dominio`, y configura el mismo origen en Google Cloud Console.
-3. Abre TCP 80 y 443 en firewall/proveedor; Caddy necesita llegar desde Internet para emitir/renovar certificados.
-4. Cambia `DB_EDITION` por una edición licenciada adecuada. No uses Developer en producción.
-5. Inicia el perfil de publicación:
+## 6. Confirmar que la publicación funciona
+
+Comprueba desde el servidor:
 
 ```bash
-docker compose --profile production up --build -d
+sudo docker compose --profile production ps
+sudo docker compose --profile production logs --tail=200 db migrate api web https backup
+curl -fsS https://tu-dominio/api/v1/health
+curl -I https://tu-dominio/
 ```
 
-El sitio queda en `https://tu-dominio`. Caddy administra certificados TLS y conserva su estado en volúmenes. El puerto local `8080` permanece ligado a `127.0.0.1` para diagnóstico desde el propio servidor; los puertos SQL/API no se publican al host.
+La página se sirve por HTTPS desde Caddy; el build de React consume FastAPI por el mismo origen, y Caddy/Nginx conservan el upgrade de WebSocket. Comprueba iniciar sesión, crear una inscripción, subir un comprobante y revisar el marcador desde dos dispositivos antes de anunciar el sitio.
 
-## 5. Migraciones y actualizaciones
+## 7. Migraciones y actualizaciones
 
 Las migraciones se ejecutan automáticamente antes de iniciar FastAPI. Cada script se registra con checksum en `dbo.SchemaMigrations`; los ya aplicados no se vuelven a ejecutar. Si se agregan migraciones en el código, se reconstruye y se levanta Compose:
 
 ```bash
-docker compose up --build -d
+sudo docker compose --profile production up --build -d
 ```
 
 Para ejecutar el migrador manualmente:
 
 ```bash
-docker compose run --rm migrate python scripts/migrate.py
+sudo docker compose run --rm migrate python scripts/migrate.py
 ```
 
 El migrador conecta como `sa`, pero la API usa `DB_USERNAME` y solo recibe `db_datareader`/`db_datawriter`. No cambies la cuenta de la API por `sa`.
 
-## 6. Estado, registros y pruebas rápidas
+## 8. Estado y registros
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 migrate api web
+sudo docker compose --profile production ps
+sudo docker compose --profile production logs --tail=200 migrate api web
 curl http://localhost:8080/
 ```
 
@@ -153,13 +259,13 @@ En Windows PowerShell:
 
 ```powershell
 Invoke-WebRequest http://localhost:8080/ -UseBasicParsing
-docker compose ps
-docker compose logs --tail=200 migrate api web
+docker compose --profile production ps
+docker compose --profile production logs --tail=200 migrate api web
 ```
 
 El frontend usa rutas de React en modo SPA. Las solicitudes `/api/...` se reenvían a FastAPI; las rutas WebSocket `/api/...` y `/ws/...` se conservan con upgrade y timeout extendido.
 
-## 7. Datos persistentes y respaldos
+## 9. Datos persistentes y respaldos
 
 - `sqlserver-data`: archivos de SQL Server.
 - `app-storage`: comprobantes y otros archivos administrados por la API.
@@ -169,26 +275,36 @@ El frontend usa rutas de React en modo SPA. Las solicitudes `/api/...` se reenv�
 Verifica los respaldos:
 
 ```bash
-docker compose logs --tail=100 backup
-docker volume ls
+sudo docker compose --profile production logs --tail=100 backup
+sudo docker volume ls
 ```
 
 Los respaldos en un volumen del mismo servidor no protegen contra pérdida del servidor o del disco. Copia periódicamente el contenido de `sqlserver-backups` a otra máquina o almacenamiento de objetos y prueba la restauración antes de operar el evento.
 
-`docker compose down` conserva los volúmenes. **No uses `docker compose down -v` en un despliegue con datos**: elimina la base y los archivos persistentes.
+`docker compose down` (en Rocky, `sudo docker compose down`) conserva los volúmenes. **No uses `docker compose down -v` en un despliegue con datos**: elimina la base y los archivos persistentes.
 
-## 8. Parar y reanudar
+## 10. Parar, reanudar y actualizar
 
 ```bash
-docker compose stop
-docker compose start
+sudo docker compose --profile production stop
+sudo docker compose --profile production start
 ```
 
 Para eliminar contenedores manteniendo datos:
 
 ```bash
-docker compose down
+sudo docker compose --profile production down
 ```
+
+Para actualizar a una versión ya fusionada en `main`, desde la carpeta del repositorio:
+
+```bash
+git pull --ff-only origin main
+sudo docker compose --profile production up --build -d
+sudo docker compose --profile production ps
+```
+
+No elimines volúmenes al actualizar. Las migraciones nuevas se ejecutan antes de que la API vuelva a arrancar.
 
 ## Limitaciones operativas conocidas
 
@@ -200,6 +316,8 @@ docker compose down
 
 ## Referencias oficiales
 
+- [Instalación de Docker en Rocky Linux](https://docs.rockylinux.org/es/gemstones/containers/docker/)
+- [Instalación de Docker Engine en RHEL](https://docs.docker.com/engine/install/rhel/)
 - [SQL Server en contenedores Linux: inicio rápido](https://learn.microsoft.com/en-us/sql/linux/install-upgrade/quickstart-install-docker)
 - [Variables de entorno de SQL Server Linux](https://learn.microsoft.com/en-us/sql/linux/sql-server-linux-configure-environment-variables)
 - [Orden de inicio y dependencias saludables de Compose](https://docs.docker.com/compose/how-tos/startup-order/)
