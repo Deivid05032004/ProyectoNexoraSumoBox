@@ -72,6 +72,7 @@ function PhaseResults({ tournament, phase }) {
 
 export default function TorneoEnVivo({ tournament, eventName }) {
   const [fullscreen, setFullscreen] = useState(false);
+  const podiumRef = useRef(null);
   useEffect(() => {
     const sync = () => setFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', sync);
@@ -89,6 +90,11 @@ export default function TorneoEnVivo({ tournament, eventName }) {
   const toggleFullscreen = async () => {
     try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.querySelector('.tournament-live-page')?.requestFullscreen(); }
     catch { /* El navegador puede bloquear la API de pantalla completa. */ }
+  };
+  const togglePodiumFullscreen = async () => {
+    if (!podiumRef.current) return;
+    if (document.fullscreenElement === podiumRef.current) await document.exitFullscreen();
+    else await podiumRef.current.requestFullscreen();
   };
 
   return <main className={`tournament-live-page ${fullscreen ? 'fullscreen' : ''}`}>
@@ -123,6 +129,7 @@ export default function TorneoEnVivo({ tournament, eventName }) {
         return <small>Tercer lugar: {bronze.winner_team_id === bronze.team_id_a ? bronze.team_a : bronze.team_b}</small>;
       })()}
     </section>}
+    {tournament.podium?.length > 0 && <section ref={podiumRef} className="tournament-live-podium"><header><span>🏆 PODIO OFICIAL</span><button type="button" onClick={togglePodiumFullscreen}>⛶ Pantalla completa</button></header><div>{tournament.podium.map((entry) => <article key={entry.position}><b>{entry.position === 1 ? '🏆' : entry.position === 2 ? '🥈' : '🥉'}</b><span>{entry.position === 1 ? '1.º LUGAR OFICIAL' : entry.position === 2 ? '2.º LUGAR OFICIAL' : '3.º LUGAR OFICIAL'}</span><strong>{entry.team}</strong><small>{entry.robot}</small></article>)}</div></section>}
     <div className="tournament-live-sync">Marcador y fase publicados por el servidor. Esta pantalla se actualiza automáticamente.</div>
   </main>;
 }

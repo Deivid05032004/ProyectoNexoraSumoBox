@@ -1,0 +1,219 @@
+.institutions-management {
+  display: grid;
+  gap: 1rem;
+  padding: clamp(1rem, 2.5vw, 1.5rem);
+  background: #141923;
+  border: 1px solid #232a36;
+  border-radius: 10px;
+}
+
+.institutions-intro,
+.institution-list-heading,
+.institution-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.institutions-eyebrow {
+  color: #9aafff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.institutions-intro h2 {
+  margin: 0.25rem 0 0;
+  color: #fff;
+  font-size: clamp(1.25rem, 2.5vw, 1.65rem);
+}
+
+.institutions-intro p {
+  max-width: 680px;
+  margin: 0.45rem 0 0;
+  color: #aeb8c7;
+  line-height: 1.5;
+}
+
+.institutions-refresh,
+.institution-primary,
+.institution-secondary,
+.institution-list li button {
+  border: 1px solid #354256;
+  border-radius: 6px;
+  padding: 0.55rem 0.85rem;
+  color: #fff;
+  background: #121722;
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.institutions-refresh:hover,
+.institution-secondary:hover,
+.institution-list li button:hover {
+  background: #1a2230;
+  border-color: #55708f;
+}
+
+.institutions-refresh:disabled,
+.institution-primary:disabled,
+.institution-secondary:disabled,
+.institution-list li button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.institution-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid #2a3546;
+  border-radius: 8px;
+  background: #10151e;
+}
+
+.institution-editor label {
+  display: grid;
+  gap: 0.45rem;
+  color: #c9d1d9;
+  font-size: 0.86rem;
+  font-weight: 650;
+}
+
+.institution-editor input {
+  min-height: 42px;
+  box-sizing: border-box;
+  padding: 0 0.8rem;
+  border: 1px solid #354256;
+  border-radius: 6px;
+  background: #0c1017;
+  color: #fff;
+  font: inherit;
+}
+
+.institution-editor input:focus {
+  border-color: #6c8df0;
+  outline: 2px solid rgb(108 141 240 / 20%);
+}
+
+.institution-editor-actions {
+  justify-content: flex-end;
+}
+
+.institution-primary {
+  border-color: #4978dc;
+  background: #245fc7;
+  font-weight: 700;
+}
+
+.institution-primary:hover {
+  background: #2d70e2;
+}
+
+.institution-feedback {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 6px;
+  font-size: 0.88rem;
+}
+
+.institution-feedback-error {
+  border: 1px solid #753a46;
+  background: #321b23;
+  color: #ffc7cf;
+}
+
+.institution-feedback-success {
+  border: 1px solid #2f725a;
+  background: #123327;
+  color: #a8e8ca;
+}
+
+.institution-list {
+  overflow: hidden;
+  border: 1px solid #232a36;
+  border-radius: 8px;
+  background: #0f141c;
+}
+
+.institution-list-heading {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid #232a36;
+  color: #fff;
+}
+
+.institution-list-heading span {
+  color: #8b949e;
+  font-size: 0.82rem;
+}
+
+.institution-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.institution-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 48px;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid #1f2834;
+  color: #e7edf6;
+}
+
+.institution-list li:last-child {
+  border-bottom: 0;
+}
+
+.institution-list li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.institution-list li button {
+  flex: 0 0 auto;
+  color: #b7caff;
+}
+
+.institution-empty,
+.institution-note {
+  margin: 0;
+  color: #8b949e;
+  line-height: 1.5;
+}
+
+.institution-empty {
+  padding: 1.25rem 1rem;
+  text-align: center;
+}
+
+.institution-note {
+  font-size: 0.8rem;
+}
+
+@media (max-width: 720px) {
+  .institutions-intro,
+  .institution-editor {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .institutions-refresh,
+  .institution-editor-actions,
+  .institution-primary,
+  .institution-secondary {
+    width: 100%;
+  }
+
+  .institution-editor-actions {
+    flex-direction: column;
+  }
+}
