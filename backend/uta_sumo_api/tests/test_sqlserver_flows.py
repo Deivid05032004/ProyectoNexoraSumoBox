@@ -669,6 +669,13 @@ def test_tournament_calendar_uses_saved_group_assignments(sql_api):
       WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode='FINAL'"""),
       {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one()
     assert final == 3
+    assert ctx["db"].execute(text("""
+      SELECT COUNT(*) FROM dbo.CompetitionMatches m
+      JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
+      WHERE cr.EventId=:event AND cr.CategoryId=:category
+        AND ((m.StageCode='FINAL' AND m.ScoreToWin<>3)
+          OR (m.StageCode<>'MANUAL' AND m.StageCode<>'FINAL' AND m.ScoreToWin<>2))
+    """), {"event": ctx["event_id"], "category": ctx["category_id"]}).scalar_one() == 0
     finish_stage("FINAL")
     assert ctx["db"].execute(text("""SELECT CurrentPhase FROM dbo.TournamentPhaseState
       WHERE EventId=:event AND CategoryId=:category"""),

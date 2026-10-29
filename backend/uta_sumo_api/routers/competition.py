@@ -18,6 +18,8 @@ from database import SessionLocal, get_db
 router = APIRouter(prefix="/api/v1", tags=["Competencias y puntuaciones"])
 live_router = APIRouter(tags=["Combate en tiempo real"])
 STAFF = ("ADMIN", "EVENT_MANAGER")
+TOURNAMENT_YUKOS_TO_WIN = 2
+FINAL_YUKOS_TO_WIN = 3
 TRANSITIONS = {"DRAFT": {"SCHEDULED", "CANCELLED"}, "SCHEDULED": {"LIVE", "CANCELLED"},
                "LIVE": {"PAUSED", "FINISHED", "CANCELLED"}, "PAUSED": {"LIVE", "FINISHED", "CANCELLED"},
                "FINISHED": set(), "CANCELLED": set()}
@@ -25,6 +27,11 @@ TRANSITIONS = {"DRAFT": {"SCHEDULED", "CANCELLED"}, "SCHEDULED": {"LIVE", "CANCE
 
 def can_transition(previous: str, target: str) -> bool:
     return target == previous or target in TRANSITIONS.get(previous, set())
+
+
+def _yukos_to_win(stage: str) -> int:
+    """The official final is first to three; every other tournament bout to two."""
+    return FINAL_YUKOS_TO_WIN if stage == "FINAL" else TOURNAMENT_YUKOS_TO_WIN
 
 
 def rank_rows(rows: list[dict]) -> list[dict]:
@@ -297,7 +304,8 @@ def _tournament_matches(db: Session, event_id: int, category_id: int) -> list[di
                 item[field] = decrypt_text(item[field])
         item["score_a"] = int(item["score_a"] or 0)
         item["score_b"] = int(item["score_b"] or 0)
-        item["score_to_win"] = int(item["score_to_win"])
+        # Expose the official threshold, correcting stale stored targets.
+        item["score_to_win"] = _yukos_to_win(item["stage_code"])
         result.append(item)
     return result
 
@@ -421,6 +429,8 @@ def _create_tournament_match(db: Session, event_id: int, category_id: int, round
                              teams: list[tuple[int, int]], actor_id: int,
                              group_code: str | None = None, slot: str | None = None,
                              score_to_win: int = 2, group_id: int | None = None) -> int:
+    # Keep phase thresholds consistent even if a caller passes a legacy target.
+    score_to_win = _yukos_to_win(stage)
     match_id = int(db.execute(text("""
       INSERT dbo.CompetitionMatches(RoundId,MatchNumber,MatchStatus,StageCode,GroupCode,
         DohyoNumber,ScoreToWin,BracketSlot,TournamentGroupId)
@@ -520,6 +530,7 @@ def _create_match_batch(db: Session, event_id: int, category_id: int, stage: str
 def _make_seeded_fixtures(stage: str, seeded_teams: list[dict], actor_id: int,
                           *, score_to_win: int = 2):
     """Pair seeded entrants while avoiding a first-round rematch from one group."""
+    score_to_win = _yukos_to_win(stage)
     count = len(seeded_teams)
     bracket_size = 1 << (count - 1).bit_length()
     bye_count = bracket_size - count
@@ -654,7 +665,7 @@ def _progress_tournament(db: Session, event_id: int, category_id: int, actor_id:
                    if row["stage_code"] == "SEMIFINAL"]
         if len(results) != 2 or any(not row["winner_team_id"] for row in results):
             raise HTTPException(409, "No se puede formar la final: faltan resultados de semifinales.")
-        fixtures = [(1,"FINAL",[results[0]["winner_team_id"],results[1]["winner_team_id"]],3)]
+        fixtures = [(1,"FINAL",[results[0]["winner_team_id"],results[1]["winner_team_id"]],FINAL_YUKOS_TO_WIN)]
         next_phase = "FINAL"
         _create_match_batch(db,event_id,category_id,next_phase,fixtures,actor_id)
         db.execute(text("""UPDATE dbo.TournamentPhaseState SET CurrentPhase=:phase,
@@ -713,7 +724,7 @@ def _progress_tournament(db: Session, event_id: int, category_id: int, actor_id:
     elif len(advancing) == 2:
         next_phase = "FINAL"
         _create_match_batch(db,event_id,category_id,next_phase,
-                            [(1,"FINAL",[advancing[0]["team_id"],advancing[1]["team_id"]],3)],actor_id)
+                            [(1,"FINAL",[advancing[0]["team_id"],advancing[1]["team_id"]],FINAL_YUKOS_TO_WIN)],actor_id)
     else:
         next_phase = _bracket_stage(len(advancing))
         if not next_phase:
@@ -1141,7 +1152,8 @@ async def award_yuko(event_id: int, match_id: int, payload: YukoInput,
             totals={team:int(totals.get(team,0)) for team in teams}
             if totals[payload.team_id] + payload.points_delta < 0:
                 raise HTTPException(409,"El marcador no puede quedar por debajo de cero Yukos.")
-            if payload.points_delta > 0 and totals[payload.team_id]>=int(match["ScoreToWin"]):
+            target = _yukos_to_win(match["StageCode"])
+            if payload.points_delta > 0 and totals[payload.team_id]>=target:
                 raise HTTPException(409,"Ese equipo ya alcanzó los Yukos necesarios para ganar.")
             db.execute(text("""
               INSERT dbo.ScoreEntries(EventId,CategoryId,TeamId,RoundId,MatchId,PointsDelta,
@@ -1152,7 +1164,7 @@ async def award_yuko(event_id: int, match_id: int, payload: YukoInput,
                   "reason":"Yuko otorgado por el administrador" if payload.points_delta > 0 else "Corrección administrativa de Yuko",
                   "key":uuid4(),"actor":user["user_id"]})
             totals[payload.team_id]+=payload.points_delta
-            if payload.points_delta > 0 and totals[payload.team_id]>=int(match["ScoreToWin"]):
+            if payload.points_delta > 0 and totals[payload.team_id]>=target:
                 loser=next(team for team in teams if team!=payload.team_id)
                 db.execute(text("""
                   UPDATE dbo.CompetitionMatches SET MatchStatus='FINISHED',WinnerTeamId=:winner,
@@ -1396,11 +1408,18 @@ def add_score(event_id: int, payload: ScoreInput,
           SELECT 1 FROM dbo.CompetitionRounds WHERE RoundId=:round AND EventId=:event AND CategoryId=:category
         """), {"round": payload.round_id, "event": event_id, "category": payload.category_id}).first():
             raise HTTPException(422, "La ronda no corresponde a la competencia y categoría.")
-        if payload.match_id and (not payload.round_id or not db.execute(text("""
-          SELECT 1 FROM dbo.CompetitionMatches m JOIN dbo.CompetitionMatchTeams mt ON mt.MatchId=m.MatchId
-          WHERE m.MatchId=:match AND m.RoundId=:round AND mt.TeamId=:team
-        """), {"match": payload.match_id, "round": payload.round_id, "team": payload.team_id}).first()):
-            raise HTTPException(422, "El enfrentamiento no incluye al equipo indicado.")
+        if payload.match_id:
+            match_stage = None if not payload.round_id else db.execute(text("""
+              SELECT m.StageCode FROM dbo.CompetitionMatches m
+              JOIN dbo.CompetitionMatchTeams mt ON mt.MatchId=m.MatchId
+              WHERE m.MatchId=:match AND m.RoundId=:round AND mt.TeamId=:team
+            """), {"match": payload.match_id, "round": payload.round_id,
+                  "team": payload.team_id}).scalar_one_or_none()
+            if match_stage is None:
+                raise HTTPException(422, "El enfrentamiento no incluye al equipo indicado.")
+            if match_stage != "MANUAL":
+                raise HTTPException(409,
+                    "Los encuentros del torneo se puntúan con el control de Yukos; no se admite puntuación directa.")
         total = int(db.execute(text("""
           SELECT COALESCE(SUM(CONVERT(BIGINT,PointsDelta)),0) FROM dbo.ScoreEntries WITH (UPDLOCK,HOLDLOCK)
           WHERE EventId=:event AND CategoryId=:category AND TeamId=:team
@@ -1882,7 +1901,7 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
 
         match = db.execute(text("""
           SELECT m.MatchId AS match_id,m.MatchNumber AS match_number,m.MatchStatus AS match_status,
-            m.PublicDetails AS public_details,
+            m.PublicDetails AS public_details,m.StageCode AS stage_code,
             cr.EventId AS event_id,cr.CategoryId AS category_id,e.CompetitionStatus AS event_status
           FROM dbo.CompetitionMatches m WITH (UPDLOCK,ROWLOCK)
           JOIN dbo.CompetitionRounds cr ON cr.RoundId=m.RoundId
@@ -1955,6 +1974,9 @@ def _apply_current_combat_update(payload: CurrentCombatUpdate, user: dict) -> di
         points.update({int(team_id): int(value) for team_id, value in current_points_rows})
         score_changed = False
         if payload.score_a is not None:
+            if match["stage_code"] != "MANUAL":
+                raise HTTPException(409,
+                    "En encuentros del torneo registra cada Yuko desde el marcador del torneo; no se permite fijar el puntaje directamente.")
             for team_id, target_score in zip(teams, (payload.score_a, payload.score_b)):
                 delta = target_score - points[team_id]
                 if delta:
