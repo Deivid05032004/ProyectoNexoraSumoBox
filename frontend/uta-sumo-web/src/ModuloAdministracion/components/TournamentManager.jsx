@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { apiRequest } from '../services/adminApi';
+import { adminWebSocketUrl, apiRequest } from '../services/adminApi';
 import { obtenerTodasLasInscripciones } from '../services/adminInscripcionesApi';
 import GroupManagement from './GroupManagement';
+import TournamentPhaseTransition from '../../ModuloResultados/TournamentPhaseTransition';
 import './TournamentManager.css';
 
 const PHASES = { NOT_CONFIGURED: 'Sin configurar', GROUP: 'Fase de grupos', ROUND_OF_64: 'Ronda de 64', ROUND_OF_32: 'Ronda de 32', ROUND_OF_16: 'Octavos de final', QUARTERFINAL: 'Cuartos de final', SEMIFINAL: 'Semifinales', THIRD_PLACE: 'Tercer puesto', FINAL: 'Gran final', FINISHED: 'Torneo finalizado' };
@@ -29,12 +30,12 @@ function tournamentPhaseSteps(groupCount) {
 function phaseExplanation(phase, groupCount) {
   if (phase === 'GROUP') {
     const next = initialKnockoutPhase(groupCount * 2);
-    return `Clasifican los 2 mejores de cada grupo. Con ${groupCount} grupos (${groupCount * 2} clasificados), la siguiente fase será ${PHASES[next] || 'la llave eliminatoria'}. El sistema avanza automáticamente cuando todos los encuentros terminan.`;
+    return `Clasifican los 2 mejores de cada grupo. Con ${groupCount} grupos (${groupCount * 2} clasificados), la siguiente fase será ${PHASES[next] || 'la llave eliminatoria'}. Al terminar todos los encuentros, revisa la clasificación y confirma el avance.`;
   }
   if (phase === 'QUARTERFINAL') return 'Los ganadores de cuartos avanzan a semifinales.';
   if (phase === 'SEMIFINAL') return 'Los ganadores disputarán la final; los otros dos jugarán por el tercer puesto.';
   if (phase === 'THIRD_PLACE') return 'Este combate define el tercer puesto. Al terminar, se habilita la final entre los ganadores de semifinales.';
-  if (phase === 'FINAL') return 'El ganador de esta final será el campeón del evento.';
+  if (phase === 'FINAL') return 'Al terminar la final, revisa el resultado y confirma el cierre para anunciar oficialmente al campeón.';
   if (phase === 'FINISHED') return 'La llave terminó y el campeón quedó definido.';
   return `Los ganadores avanzan a ${PHASES[BRACKET_NEXT[phase]] || 'la siguiente ronda'}.`;
 }
@@ -108,6 +109,49 @@ export default function TournamentManager({ isOpen, event, onClose }) {
     return () => { alive = false; };
   }, [isOpen, event?.id, loadTournament]);
 
+  useEffect(() => {
+    if (!isOpen || !event?.id || !categoryId || typeof WebSocket === 'undefined') return undefined;
+    let stopped = false;
+    let socket;
+    let retryTimer;
+    let retryDelay = 1000;
+    const url = adminWebSocketUrl(
+      `/api/v1/events/${event.id}/live?category_id=${encodeURIComponent(categoryId)}`,
+    );
+    const connect = () => {
+      if (stopped) return;
+      try {
+        socket = new WebSocket(url);
+      } catch {
+        retryTimer = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 15000);
+        return;
+      }
+      socket.onopen = () => { retryDelay = 1000; };
+      socket.onmessage = ({ data }) => {
+        try {
+          const snapshot = JSON.parse(data);
+          if (Number(snapshot.event_id) === Number(event.id)
+              && Number(snapshot.tournament?.category_id) === Number(categoryId)) {
+            setTournament(snapshot.tournament);
+          }
+        } catch { /* La siguiente instantánea vuelve a sincronizar el panel. */ }
+      };
+      socket.onclose = () => {
+        if (stopped) return;
+        retryTimer = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 15000);
+      };
+      socket.onerror = () => socket?.close();
+    };
+    connect();
+    return () => {
+      stopped = true;
+      window.clearTimeout(retryTimer);
+      socket?.close();
+    };
+  }, [isOpen, event?.id, categoryId]);
+
   async function selectCategory(value) {
     setCategoryId(value); setError(''); setNotice('');
     setSelectedGroupCode('');
@@ -162,9 +206,10 @@ export default function TournamentManager({ isOpen, event, onClose }) {
   return <div className="tournament-modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
     <section className="tournament-modal" role="dialog" aria-modal="true" aria-labelledby="tournament-title">
       <header className="tournament-header"><div><span>GESTIÓN DE FASES Y PUNTUACIÓN</span><h2 id="tournament-title">Torneo y marcador simultáneo</h2>
-        <p>{event?.name || 'Evento'} · equipos aprobados · cuatro dohyos</p></div><button className="tournament-close" type="button" onClick={onClose} aria-label="Cerrar">×</button></header>
+        <p>{event?.name || 'Evento'} · equipos aprobados · formato según categoría</p></div><button className="tournament-close" type="button" onClick={onClose} aria-label="Cerrar">×</button></header>
       {error && <div className="tournament-alert" role="alert">{error}</div>}{notice && <div className="tournament-notice" role="status">{notice}</div>}
       {loading ? <div className="tournament-loading">Cargando inscripciones aprobadas…</div> : <>
+        <TournamentPhaseTransition tournament={tournament} audience="admin" />
         <div className="tournament-toolbar"><label>Categoría<select value={categoryId} onChange={(e) => selectCategory(e.target.value)} disabled={!categories.length}>
           {!categories.length && <option value="">Este evento no tiene categorías activas</option>}
           {categories.map((item) => <option key={item.category_id ?? item.id} value={item.category_id ?? item.id}>{item.category_name ?? item.name}</option>)}
@@ -188,7 +233,16 @@ export default function TournamentManager({ isOpen, event, onClose }) {
               <div className="tournament-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax={phaseProgress.total} aria-valuenow={phaseProgress.finished}>
                 <span style={{ width: `${Math.round((phaseProgress.finished / phaseProgress.total) * 100)}%` }} />
               </div>
-              {!phaseProgress.complete && <small>La siguiente fase se genera automáticamente al finalizar todos los encuentros de esta fase.</small>}
+              {!phaseProgress.complete && <small>La fase seguirá activa hasta que se completen todos sus encuentros.</small>}
+              {phaseProgress.complete && tournament.can_advance && <div className="tournament-phase-ready" role="status">
+                <div><b>Fase completada</b><span>Los resultados están guardados. Revisa la clasificación y confirma {tournament.next_phase === 'FINISHED' ? 'el cierre oficial del torneo' : `el avance a ${PHASES[tournament.next_phase] || tournament.next_phase}`}.</span></div>
+                <button type="button" className="tournament-advance-phase" disabled={saving}
+                  onClick={() => mutate(`/api/v1/events/${event.id}/tournament/advance-phase?category_id=${categoryId}`)}>
+                  {saving ? 'Preparando fase…' : tournament.next_phase === 'FINISHED'
+                    ? 'Confirmar campeón y finalizar torneo →'
+                    : `Avanzar a ${PHASES[tournament.next_phase] || tournament.next_phase} →`}
+                </button>
+              </div>}
             </div>}
             {new Set(groupCodes).size === 4 && ['A', 'B', 'C', 'D'].every((code) => groupCodes.includes(code))
               && <small className="tournament-official-bracket">Cuartos: 1.º A vs. 2.º B · 1.º C vs. 2.º D · 1.º B vs. 2.º A · 1.º D vs. 2.º C. En semifinales se cruzan los ganadores QF1–QF2 y QF3–QF4.</small>}
@@ -224,7 +278,7 @@ export default function TournamentManager({ isOpen, event, onClose }) {
                 <ol className="tournament-group-standings">{rows.map((team) => <li key={team.team_id} className={team.rank <= 2 ? 'provisional-qualifier' : ''}>
                   <span><b>{team.rank}.</b> {team.team} · {team.robot}</span>
                   <strong>{team.wins} combates · {team.yukos_for}–{team.yukos_against} Yukos · Δ {team.difference}</strong>
-                  {team.rank <= 2 && tournament.phase === 'GROUP' && <small className="tournament-qualifier-badge">Clasifica provisionalmente</small>}
+                  {team.rank <= 2 && tournament.phase === 'GROUP' && <small className="tournament-qualifier-badge">{phaseProgress?.complete && !tournament.unresolved_qualifying_ties?.length ? 'Clasificación oficial' : 'En zona de clasificación'}</small>}
                   {team.tie_status === 'UNRESOLVED' && <small className="tournament-tie-badge">Empate sin resolver por reglamento</small>}
                   {team.tie_breaker === 'HEAD_TO_HEAD' && <small className="tournament-tie-badge">Ordenado por duelo directo</small>}
                 </li>)}</ol>

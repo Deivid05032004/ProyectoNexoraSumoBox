@@ -247,6 +247,18 @@ def _phase_progress(matches: list[dict], phase: str | None) -> dict:
             "complete": total > 0 and counts["FINISHED"] == total}
 
 
+def _next_phase(phase: str | None, group_codes: list[str]) -> str | None:
+    """Return the next official stage without changing tournament state."""
+    if phase == "GROUP":
+        if set(group_codes) == {"A", "B", "C", "D"}:
+            return "QUARTERFINAL"
+        return _bracket_stage(len(group_codes) * 2)
+    return {"ROUND_OF_64": "ROUND_OF_32", "ROUND_OF_32": "ROUND_OF_16",
+            "ROUND_OF_16": "QUARTERFINAL", "QUARTERFINAL": "SEMIFINAL",
+            "SEMIFINAL": "THIRD_PLACE", "THIRD_PLACE": "FINAL",
+            "FINAL": "FINISHED"}.get(phase)
+
+
 def _tournament_matches(db: Session, event_id: int, category_id: int) -> list[dict]:
     rows = db.execute(text("""
       SELECT m.MatchId AS match_id,m.MatchNumber AS match_number,m.MatchStatus AS status,
@@ -357,9 +369,14 @@ def _tournament_snapshot(db: Session, event_id: int, category_id: int) -> dict:
     progress = _phase_progress(matches, state)
     unresolved_ties = (_unresolved_qualifying_ties(teams_by_group)
                        if state == "GROUP" and progress["complete"] else [])
-    return {"event_id": event_id, "category_id": category_id, "phase": state or "NOT_CONFIGURED",
+    phase = state or "NOT_CONFIGURED"
+    next_phase = _next_phase(phase, group_codes)
+    can_advance = (progress["complete"] and phase not in ("NOT_CONFIGURED", "FINISHED")
+                   and not unresolved_ties and next_phase is not None)
+    return {"event_id": event_id, "category_id": category_id, "phase": phase,
             "groups": teams_by_group, "group_names": group_names, "matches": matches, "boards": boards,
-            "unresolved_qualifying_ties": unresolved_ties, "phase_progress": progress}
+            "unresolved_qualifying_ties": unresolved_ties, "phase_progress": progress,
+            "next_phase": next_phase, "can_advance": can_advance}
 
 
 def _accumulate_group_results(team_rows: dict[int, dict], matches: list[dict]) -> None:
@@ -716,6 +733,66 @@ def get_tournament(event_id: int, category_id: int = Query(gt=0),
     if not db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:event"), {"event": event_id}).first():
         raise HTTPException(404, "Evento no encontrado.")
     return _tournament_snapshot(db,event_id,category_id)
+
+
+def _advance_tournament_phase(db: Session, event_id: int, category_id: int,
+                              actor_id: int) -> dict:
+    """Lock and advance exactly one completed phase inside the caller's transaction."""
+    locked_phase = db.execute(text("""
+      SELECT CurrentPhase FROM dbo.TournamentPhaseState WITH (UPDLOCK,HOLDLOCK)
+      WHERE EventId=:event AND CategoryId=:category
+    """), {"event": event_id, "category": category_id}).scalar_one_or_none()
+    if locked_phase is None:
+        raise HTTPException(404, "No existe un torneo configurado para esta categoría.")
+    snapshot = _tournament_snapshot(db, event_id, category_id)
+    if snapshot["phase"] == "FINISHED":
+        raise HTTPException(409, "El torneo ya finalizó.")
+    if not snapshot["phase_progress"]["complete"]:
+        progress = snapshot["phase_progress"]
+        raise HTTPException(409,
+            f"La fase aún tiene {progress['remaining']} encuentro(s) sin finalizar.")
+    current_results = [match for match in snapshot["matches"]
+                       if match["stage_code"] == snapshot["phase"]]
+    if any(match["status"] != "FINISHED" or not match["winner_team_id"]
+           for match in current_results):
+        raise HTTPException(409,
+            "No se puede avanzar: faltan resultados oficiales completos en esta fase.")
+    if snapshot["unresolved_qualifying_ties"]:
+        raise HTTPException(409,
+            "No se puede avanzar: hay empates de clasificación que requieren resolución.")
+    if not snapshot["next_phase"]:
+        raise HTTPException(409, "No se pudo determinar la siguiente fase del torneo.")
+    _progress_tournament(db, event_id, category_id, actor_id)
+    result = _tournament_snapshot(db, event_id, category_id)
+    if result["phase"] == snapshot["phase"]:
+        raise HTTPException(409, "El torneo no pudo avanzar; revise la configuración y los resultados.")
+    return result
+
+
+@router.post("/events/{event_id}/tournament/advance-phase")
+async def advance_tournament_phase(event_id: int, category_id: int = Query(gt=0),
+                                  user=Depends(require_roles(*STAFF))):
+    """Advance exactly one completed phase, explicitly requested by tournament staff."""
+    def apply():
+        db = SessionLocal()
+        try:
+            result = _advance_tournament_phase(db, event_id, category_id, user["user_id"])
+            db.commit()
+            return result
+        except HTTPException:
+            db.rollback()
+            raise
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(409, "La fase no pudo avanzar por un conflicto con el calendario.")
+        finally:
+            db.close()
+
+    tournament = await asyncio.to_thread(apply)
+    # The public live snapshot reads SQL every two seconds; this immediate
+    # broadcast updates the current-combat channel for connected screens too.
+    await live_combat_connections.broadcast(await asyncio.to_thread(_load_current_combat_snapshot))
+    return tournament
 
 
 @router.post("/events/{event_id}/tournament")
@@ -1081,7 +1158,6 @@ async def award_yuko(event_id: int, match_id: int, payload: YukoInput,
                   UPDATE dbo.CompetitionMatches SET MatchStatus='FINISHED',WinnerTeamId=:winner,
                     LoserTeamId=:loser WHERE MatchId=:match
                 """), {"winner":payload.team_id,"loser":loser,"match":match_id})
-                _progress_tournament(db,event_id,category_id,user["user_id"])
             db.execute(text("""
               UPDATE dbo.ActiveCombat SET UpdatedByUserId=:actor,UpdatedAt=SYSUTCDATETIME()
               WHERE ActiveCombatId=1 AND MatchId=:match
@@ -1133,7 +1209,6 @@ async def advance_dohyo(event_id: int, dohyo_number: int, category_id: int = Que
                 """), {"event":event_id,"category":category_id,"stage":current["StageCode"]}).scalar_one_or_none()
             if next_match is None:
                 _set_live_dohyo(db,event_id,category_id,dohyo_number,None,user["user_id"])
-                _progress_tournament(db,event_id,category_id,user["user_id"])
             else:
                 db.execute(text("UPDATE dbo.CompetitionMatches SET MatchStatus='LIVE' WHERE MatchId=:id"),{"id":next_match})
                 _set_live_dohyo(db,event_id,category_id,dohyo_number,int(next_match),user["user_id"])
@@ -2021,7 +2096,7 @@ async def live_current_combat(websocket: WebSocket):
         await live_combat_connections.disconnect(websocket)
 
 
-def _load_live_snapshot(event_id: int):
+def _load_live_snapshot(event_id: int, category_id: int | None = None):
     db = SessionLocal()
     try:
         state = db.execute(text("SELECT CompetitionStatus FROM dbo.Events WHERE EventId=:id"),
@@ -2029,10 +2104,16 @@ def _load_live_snapshot(event_id: int):
         items = _leaderboard(db, event_id, None)
         snapshot = {"event_id": event_id, "status": state,
                     "items": [{k: v for k, v in item.items() if k != "updated_at"} for item in items]}
-        tournament = db.execute(text("""
-          SELECT TOP (1) CategoryId FROM dbo.TournamentPhaseState
-          WHERE EventId=:event ORDER BY UpdatedAt DESC,CategoryId
-        """), {"event": event_id}).scalar_one_or_none()
+        if category_id is not None:
+            tournament = db.execute(text("""
+              SELECT CategoryId FROM dbo.TournamentPhaseState
+              WHERE EventId=:event AND CategoryId=:category
+            """), {"event": event_id, "category": category_id}).scalar_one_or_none()
+        else:
+            tournament = db.execute(text("""
+              SELECT TOP (1) CategoryId FROM dbo.TournamentPhaseState
+              WHERE EventId=:event ORDER BY UpdatedAt DESC,CategoryId
+            """), {"event": event_id}).scalar_one_or_none()
         if tournament is not None:
             snapshot["tournament"] = _tournament_snapshot(db,event_id,int(tournament))
         return snapshot
@@ -2041,12 +2122,15 @@ def _load_live_snapshot(event_id: int):
 
 
 @router.websocket("/events/{event_id}/live")
-async def live_results(websocket: WebSocket, event_id: int):
+async def live_results(websocket: WebSocket, event_id: int, category_id: int | None = None):
     # Public stream exposes standings only, never PII or payment data.
     db = SessionLocal()
     try:
         exists = db.execute(text("SELECT 1 FROM dbo.Events WHERE EventId=:id"), {"id": event_id}).first()
-        if not exists:
+        category_exists = (category_id is None or db.execute(text("""
+          SELECT 1 FROM dbo.EventCategories WHERE EventId=:event AND CategoryId=:category
+        """), {"event": event_id, "category": category_id}).first())
+        if not exists or not category_exists:
             await websocket.close(code=4404)
             return
     finally:
@@ -2055,7 +2139,7 @@ async def live_results(websocket: WebSocket, event_id: int):
     last_snapshot = None
     try:
         while True:
-            snapshot = await asyncio.to_thread(_load_live_snapshot, event_id)
+            snapshot = await asyncio.to_thread(_load_live_snapshot, event_id, category_id)
             if snapshot != last_snapshot:
                 await websocket.send_json(snapshot)
                 last_snapshot = snapshot

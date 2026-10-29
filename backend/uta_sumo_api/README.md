@@ -177,7 +177,29 @@ inicial y detecta cambios mediante consulta periódica cada dos segundos; emite
 solo estado y clasificación, sin datos personales o financieros. El sondeo
 funciona con una instancia de API y SQL Server persistente; varias instancias
 pueden consultar la misma base, aunque el intervalo de actualización es de dos
-segundos.
+segundos. Puede limitar la instantánea del torneo a una categoría con
+`?category_id={category_id}`; el panel administrativo usa esa opción para
+reconstruir fase y resultados cuando reconecta.
+
+### Fases del torneo y autorización de avance
+
+El snapshot de `GET /api/v1/events/{event_id}/tournament?category_id={id}`
+incluye la clasificación oficial calculada desde los resultados en SQL,
+`phase_progress`, `next_phase` y `can_advance`. Al concluir todos los encuentros,
+la fase y su tabla permanecen visibles; el backend no crea la siguiente llave
+hasta que personal autorizado confirma explícitamente:
+
+```http
+POST /api/v1/events/{event_id}/tournament/advance-phase?category_id={id}
+Authorization: Bearer <token de ADMIN o EVENT_MANAGER>
+```
+
+El avance bloquea la fila de estado de esa categoría y genera la fase dentro de
+la misma transacción. Repeticiones concurrentes no crean llaves duplicadas. La
+respuesta incluye el snapshot nuevo y se publica al WebSocket público del evento
+y al WebSocket del marcador cuando hay una pantalla conectada. Si faltan
+resultados o existe un empate que el reglamento no permite resolver, la API
+responde `409` en español y conserva intacta la fase actual.
 
 Una inscripción se identifica de forma única por evento, categoría, equipo y
 robot. Un equipo puede tener varios robots y participar en más de una categoría

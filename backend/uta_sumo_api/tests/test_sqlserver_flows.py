@@ -6,6 +6,7 @@ from decimal import Decimal
 from time import sleep
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from sqlalchemy import bindparam, text
@@ -639,7 +640,8 @@ def test_tournament_calendar_uses_saved_group_assignments(sql_api):
           JOIN dbo.CompetitionMatchTeams right_team ON right_team.MatchId=m.MatchId AND right_team.TeamPosition=2
           WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode=:stage
         """), {"event": ctx["event_id"], "category": ctx["category_id"], "stage": stage})
-        competition_router._progress_tournament(
+        ctx["db"].commit()
+        competition_router._advance_tournament_phase(
             ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
         ctx["db"].commit()
 
@@ -724,7 +726,8 @@ def test_custom_groups_and_non_power_of_two_bracket_progress(sql_api):
           JOIN dbo.CompetitionMatchTeams right_team ON right_team.MatchId=m.MatchId AND right_team.TeamPosition=2
           WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode=:stage
         """), {"event": ctx["event_id"], "category": ctx["category_id"], "stage": stage})
-        competition_router._progress_tournament(
+        ctx["db"].commit()
+        competition_router._advance_tournament_phase(
             ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
         ctx["db"].commit()
 
@@ -782,6 +785,11 @@ def test_two_groups_progress_to_semifinals_then_third_place_and_one_final(sql_ap
         "stage": "GROUP", "total": 2, "finished": 0, "live": 0,
         "scheduled": 2, "cancelled": 0, "remaining": 2, "complete": False,
     }
+    with pytest.raises(HTTPException) as blocked:
+        competition_router._advance_tournament_phase(
+            ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
+    assert blocked.value.status_code == 409
+    ctx["db"].commit()
 
     def finish(stage):
         ctx["db"].execute(text("""
@@ -792,11 +800,17 @@ def test_two_groups_progress_to_semifinals_then_third_place_and_one_final(sql_ap
           JOIN dbo.CompetitionMatchTeams right_team ON right_team.MatchId=m.MatchId AND right_team.TeamPosition=2
           WHERE cr.EventId=:event AND cr.CategoryId=:category AND m.StageCode=:stage
         """), {"event": ctx["event_id"], "category": ctx["category_id"], "stage": stage})
-        competition_router._progress_tournament(
+        ctx["db"].commit()
+        competition_router._advance_tournament_phase(
             ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
         ctx["db"].commit()
 
     finish("GROUP")
+    with pytest.raises(HTTPException) as duplicate_advance:
+        competition_router._advance_tournament_phase(
+            ctx["db"], ctx["event_id"], ctx["category_id"], admin["user_id"])
+    assert duplicate_advance.value.status_code == 409
+    ctx["db"].commit()
     semifinal = client.get(f"/api/v1/events/{ctx['event_id']}/tournament?category_id={ctx['category_id']}",
         headers=admin["headers"]).json()
     assert semifinal["phase"] == "SEMIFINAL"
