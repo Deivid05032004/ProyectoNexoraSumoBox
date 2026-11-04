@@ -31,7 +31,7 @@ export default function GroupManagement({ isOpen, event, onClose, embedded = fal
     }
     const [result, registrationsPage] = await Promise.all([
       apiRequest(basePath),
-      apiRequestPage(`${basePath}/eligible-registrations?page=${eligiblePage}&limit=5`),
+      apiRequestPage(`${basePath}/eligible-registrations?page=${eligiblePage}&limit=100`),
     ]);
     setGroups(result.groups || []);
     setLocked(Boolean(result.locked));

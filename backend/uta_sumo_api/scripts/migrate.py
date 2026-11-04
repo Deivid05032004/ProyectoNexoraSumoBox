@@ -72,6 +72,7 @@ MIGRATIONS = [
     ROOT / "database/scripts/42_robot_names_unique_per_team.sql",
     ROOT / "database/scripts/43_tournament_matches_first_to_two_yukos.sql",
     ROOT / "database/scripts/44_final_match_three_yukos.sql",
+    ROOT / "database/scripts/45_allow_duplicate_team_names.sql",
 ]
 SUPERSEDED_BASELINE_MIGRATIONS = {
     "database/scripts/02_create_tables.sql",
