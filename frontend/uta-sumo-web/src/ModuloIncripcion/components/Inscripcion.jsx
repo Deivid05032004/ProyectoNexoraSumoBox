@@ -19,7 +19,11 @@ function normalizarNombre(valor) {
 }
 
 function institucionValida(institucion) {
-  return institucion.name.length <= 30 && PATRON_NOMBRE.test(institucion.name)
+  // Las instituciones provienen del catálogo administrado por el backend.
+  // Sus nombres pueden ser largos y contener puntuación (p. ej. "A. Martínez").
+  return typeof institucion?.name === 'string'
+    && institucion.name.trim().length > 0
+    && institucion.name.length <= 150
 }
 
 function integranteVacio(role) {
@@ -63,9 +67,7 @@ function erroresIntegrantes(integrantes, instituciones) {
     }
     const institucion = instituciones.find((item) => String(item.id) === integrante.institution_id)
     if (!institucion) erroresCampo.institution_id = 'Selecciona una institución válida.'
-    else if (!institucionValida(institucion)) {
-      erroresCampo.institution_id = 'La institución debe tener máximo 30 caracteres y solo letras y espacios.'
-    }
+    else if (!institucionValida(institucion)) erroresCampo.institution_id = 'La institución seleccionada no es válida.'
     if (!integrante.mobile_phone) {
       erroresCampo.mobile_phone = 'Ingresa el número celular.'
     } else if (!PATRON_CELULAR.test(integrante.mobile_phone)) {
